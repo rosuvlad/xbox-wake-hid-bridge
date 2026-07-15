@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Queue releases rather than cancelling them: each run reads the newest tag to
+# pick its version, so two racing merges would otherwise both claim the same one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Next version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    env:
+      # Published as-is for the first release; every release after it reads the
+      # newest tag and bumps the patch (v0.0.0 -> v0.0.1 -> v0.0.2 ...).
+      INITIAL_VERSION: v0.0.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags drive the version
+      - id: next
+        run: |
+          # `|| true` because with no tags yet grep exits non-zero, and the
+          # runner's bash runs with pipefail. Pre-release tags like v1.0.0-rc1
+          # are skipped so they can never feed the arithmetic below.
+          latest=$(git tag -l 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n1 || true)
+          if [ -z "$latest" ]; then
+            version="$INITIAL_VERSION"
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            version="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "${latest:-(no tags)} -> $version"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      upload: true
+
+  release:
+    name: Publish ${{ needs.version.outputs.version }}
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Name the assets
+        run: |
+          mkdir -p release
+          # One directory per board, each holding that board's images.
+          for dir in artifacts/*/; do
+            board=$(basename "$dir")
+            for file in "$dir"*; do
+              cp "$file" "release/${{ github.event.repository.name }}-${VERSION}-${board}-$(basename "$file")"
+            done
+          done
+          ls -l release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Tagging here rather than before the build means a red build never
+        # burns a version number.
+        run: |
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "$VERSION" \
+            --generate-notes \
+            release/*

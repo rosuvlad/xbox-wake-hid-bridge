@@ -1,0 +1,71 @@
+name: Build
+
+# Shared by ci.yml and release.yml so that what CI proves green is built the
+# same way as what gets released.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Stamped into the firmware as FW_VERSION.
+        required: true
+        type: string
+      upload:
+        description: Keep each board's images as artifacts for the release job to publish.
+        default: false
+        type: boolean
+
+jobs:
+  boards:
+    name: Discover boards
+    runs-on: ubuntu-latest
+    outputs:
+      boards: ${{ steps.discover.outputs.boards }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: discover
+        # Every [env:NAME] in platformio.ini is a board we ship, so adding a
+        # board there is all it takes to get it built and released. The bare
+        # [env] section carries shared settings and is not a board, so the
+        # trailing colon in the pattern matters.
+        run: |
+          boards=$(sed -n 's/^\[env:\([^]]*\)\]/"\1"/p' platformio.ini | paste -sd, -)
+          echo "boards=[$boards]" >> "$GITHUB_OUTPUT"
+          echo "Building: [$boards]"
+
+  build:
+    name: ${{ matrix.board }}
+    needs: boards
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.boards.outputs.boards) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
+      - name: Build ${{ matrix.board }}
+        env:
+          FW_VERSION: ${{ inputs.version }}
+        # mergebin runs even when nothing is uploaded: it costs about a second
+        # and it means a broken release script fails on the branch that broke
+        # it rather than on main.
+        run: |
+          pio run -e "${{ matrix.board }}"
+          pio run -e "${{ matrix.board }}" -t mergebin
+      - uses: actions/upload-artifact@v7
+        if: inputs.upload
+        with:
+          name: ${{ matrix.board }}
+          path: .pio/build/${{ matrix.board }}/release/
+          if-no-files-found: error
