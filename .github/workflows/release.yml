@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     branches: [main]
+    # A docs-only merge would otherwise cut a release whose firmware is
+    # byte-identical to the one before it apart from the version string. A push
+    # touching anything else still releases, even if it also edits docs; use the
+    # workflow_dispatch below to force a release regardless.
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 # Queue releases rather than cancelling them: each run reads the newest tag to

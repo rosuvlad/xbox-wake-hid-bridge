@@ -135,6 +135,8 @@ src/
   Ui.h / Ui.cpp     full-screen TFT_eSprite renderer — every screen + widget
 board/              LilyGO board definition (esp32-s3-t-qt-pro.json)
 lib/TFT_eSPI/       vendored, LilyGO-patched GC9A01 driver (do not upgrade)
+scripts/            PlatformIO build hooks: FW_VERSION stamp, `mergebin` target
+.github/workflows/  CI (build every board) + release (tag & publish from main)
 ```
 
 The three layers are deliberately decoupled: BLE (`ControllerLink`) and USB
@@ -275,6 +277,110 @@ into the bootloader. Put it into **download mode** first:
 green/coloured-border alignment pattern used to measure the GC9A01 CGRAM edge
 offset (this panel needed `rowstart = 1` for rotation 2, fixed in
 `lib/TFT_eSPI/TFT_Drivers/GC9A01_Rotation.h`). Leave it `0` for normal use.
+
+---
+
+## Releases & CI
+
+GitHub Actions builds both boards on every push; merges to `main` publish a
+release. Nothing is tagged or uploaded by hand.
+
+| Where | What happens |
+| --- | --- |
+| feature branch | compiles both boards, publishes nothing |
+| merge to `main` | compiles both boards, then tags and releases them |
+
+Versions come from git tags and auto-increment the patch — the first release is
+`v0.0.0`, and every merge after it reads the newest tag and bumps it (`v0.0.1`,
+`v0.0.2`, …). The tag is created **after** a green build, so a failed build never
+burns a version number. For a minor or major bump, push the tag yourself and the
+next merge carries on from it:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0    # next merge to main -> v0.1.1
+```
+
+CI reads the board list straight out of `platformio.ini` — every `[env:NAME]` is
+built and released, so adding a board there needs no workflow edit.
+
+### What a release contains
+
+One full set of images per board, e.g. for `v0.0.0` on `T-QT-Pro-N4R2`:
+
+| Asset | Use |
+| --- | --- |
+| `…-merged.bin` | **the one you want** — the whole flash in one file, written at `0x0` |
+| `…-firmware.bin` | just the app, for a board that already has a bootloader (`0x10000`) |
+| `…-bootloader.bin` · `…-partitions.bin` · `…-boot_app0.bin` | the individual pieces |
+| `…-flash-args.txt` | the offset each piece goes to |
+
+### Flashing a release
+
+No PlatformIO needed — a release flashes from the browser or with `esptool`
+alone. Either way, put the board in **download mode** first (see
+[Flash](#flash)): the HID-only firmware exposes no serial port, so nothing can
+auto-reset it into the bootloader.
+
+**From the browser, nothing to install** — open the
+[ESPBoards web flasher](https://www.espboards.dev/tools/program/) in Chrome, Edge
+or Opera (Firefox and Safari have no Web Serial API):
+
+1. **Connect** → pick the board's COM/serial port; the ESP32-S3 is auto-detected.
+2. **Flash firmware** → drag in `…-merged.bin`.
+3. Set the address to **`0x0`** and flash.
+
+> **The merged image goes to `0x0` — not `0x10000`.** It already contains the
+> bootloader, partition table and app at their right places, so it starts at the
+> very beginning of flash. `0x10000` is the app-only offset and belongs to
+> `…-firmware.bin`; writing the merged image there produces a board that won't
+> boot.
+
+This is the easiest way to put firmware on a board that has never had PlatformIO
+near it. To flash the individual images instead, use the offsets from that
+board's `…-flash-args.txt` — which is exactly the "addresses from your build
+output" the tool asks for.
+
+**From the CLI:**
+
+```bash
+esptool.py --chip esp32s3 write_flash 0x0 \
+  xbox-wake-hid-bridge-v0.0.0-T-QT-Pro-N4R2-merged.bin
+```
+
+### The build scripts
+
+`platformio.ini` wires two scripts into every build, so a local build and a CI
+build produce the same thing.
+
+**`scripts/fw_version.py`** defines an `FW_VERSION` macro for every build — the
+release tag in CI, `git describe --tags --always --dirty` locally. Nothing in
+`src/` reads it yet; it exists so a build can identify itself (the diagnostics
+screen is the obvious home for it). Override it for a one-off:
+
+```bash
+FW_VERSION=v9.9.9-test pio run -e T-QT-Pro-N4R2
+```
+
+**`scripts/merge_bin.py`** adds the `mergebin` target, which produces the release
+images locally exactly as CI does:
+
+```bash
+pio run -e T-QT-Pro-N4R2 -t mergebin
+# -> .pio/build/T-QT-Pro-N4R2/release/
+#      merged.bin  firmware.bin  bootloader.bin  partitions.bin  boot_app0.bin
+#      flash-args.txt
+```
+
+Useful for testing a release image before merging, or for flashing a board from
+one file. It reads the flash offsets back out of the build environment instead of
+hardcoding them, so the merged image always matches what `pio run -t upload`
+would write — including the `qio`→`dio` remap the platform applies to the
+bootloader header. ([PlatformIO has no built-in merge target.](https://github.com/platformio/platform-espressif32/issues/1078))
+
+> Note: `board/esp32-s3-t-qt-pro.json` declares 4 MB for both variants, so the
+> `T-QT-Pro-N8` image is built with a 4 MB flash size. That matches what
+> `pio run -t upload` already writes, but it means the N8's upper 4 MB goes
+> unused.
 
 ---
 
