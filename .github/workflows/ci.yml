@@ -1,0 +1,25 @@
+name: CI
+
+# Compile every board on each commit, publishing nothing. Pushes to main are
+# covered by release.yml, which builds the same way and then releases.
+#
+# Push-only on purpose: adding `pull_request` would build same-repo PRs twice,
+# once for the branch and once for the merge ref. Add it if this repo ever
+# needs to build PRs from forks, which pushes here never see.
+on:
+  push:
+    branches-ignore: [main]
+
+# A newer commit on the same branch makes the older build irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: dev-${{ github.sha }}
