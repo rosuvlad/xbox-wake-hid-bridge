@@ -305,7 +305,7 @@ built and released, so adding a board there needs no workflow edit.
 
 ### What a release contains
 
-One full set of images per board, e.g. for `v0.0.1` on `T-QT-Pro-N4R2`:
+One full set of images per board, e.g. for `v0.0.0` on `T-QT-Pro-N4R2`:
 
 | Asset | Use |
 | --- | --- |
@@ -314,13 +314,37 @@ One full set of images per board, e.g. for `v0.0.1` on `T-QT-Pro-N4R2`:
 | `…-bootloader.bin` · `…-partitions.bin` · `…-boot_app0.bin` | the individual pieces |
 | `…-flash-args.txt` | the offset each piece goes to |
 
-Flashing a downloaded release needs only `esptool`, not PlatformIO. Put the board
-in **download mode** first (see [Flash](#flash) — the HID-only firmware exposes no
-serial port, so it can't auto-reset):
+### Flashing a release
+
+No PlatformIO needed — a release flashes from the browser or with `esptool`
+alone. Either way, put the board in **download mode** first (see
+[Flash](#flash)): the HID-only firmware exposes no serial port, so nothing can
+auto-reset it into the bootloader.
+
+**From the browser, nothing to install** — open the
+[ESPBoards web flasher](https://www.espboards.dev/tools/program/) in Chrome, Edge
+or Opera (Firefox and Safari have no Web Serial API):
+
+1. **Connect** → pick the board's COM/serial port; the ESP32-S3 is auto-detected.
+2. **Flash firmware** → drag in `…-merged.bin`.
+3. Set the address to **`0x0`** and flash.
+
+> **The merged image goes to `0x0` — not `0x10000`.** It already contains the
+> bootloader, partition table and app at their right places, so it starts at the
+> very beginning of flash. `0x10000` is the app-only offset and belongs to
+> `…-firmware.bin`; writing the merged image there produces a board that won't
+> boot.
+
+This is the easiest way to put firmware on a board that has never had PlatformIO
+near it. To flash the individual images instead, use the offsets from that
+board's `…-flash-args.txt` — which is exactly the "addresses from your build
+output" the tool asks for.
+
+**From the CLI:**
 
 ```bash
 esptool.py --chip esp32s3 write_flash 0x0 \
-  xbox-wake-hid-bridge-v0.0.1-T-QT-Pro-N4R2-merged.bin
+  xbox-wake-hid-bridge-v0.0.0-T-QT-Pro-N4R2-merged.bin
 ```
 
 ### The build scripts
