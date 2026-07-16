@@ -1,4 +1,7 @@
-name: Release
+# Named "Build & Release" (not just "Release") because it compiles every board
+# before it publishes anything — so its badge doubles as the main-branch build
+# indicator. ci.yml covers the same compile on feature branches.
+name: Build & Release
 
 on:
   push:

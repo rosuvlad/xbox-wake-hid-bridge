@@ -8,28 +8,48 @@
 //   Short LEFT  -> previous page          Short RIGHT -> next page
 //   Long  LEFT  -> pair a new controller  Long  RIGHT -> forget controller
 //   Long  BOTH  -> diagnostics
+//
+// Headless builds (UX_LED, see Ux.h) have one LED and one button instead, so
+// the scheme collapses to:
+//   Hold BOOT 2s -> forget controller and reboot into pairing
+// Nothing is lost: pages need a screen, and "pair a new controller" and "forget
+// controller" were already the same operation on both long-press paths below.
 #include <Arduino.h>
+
+#if !UX_LED
 #include <OneButton.h>
+#endif
 
 #include "AppState.h"
 #include "BridgeState.h"
 #include "Config.h"
 #include "ControllerLink.h"
-#include "Ui.h"
 #include "UsbGamepad.h"
+#include "Ux.h"
 
-static Ui ui;
+#if UX_LED
+#include "HoldButton.h"
+#endif
+
+static Ux ui;
 static ControllerLink padLink;
 static UsbGamepad usb;
 static BridgeState bridge;
+
+#if UX_LED
+static HoldButton btnForget(FORGET_HOLD_MS);
+#else
 static OneButton btnL(PIN_BTN_LEFT, true);
 static OneButton btnR(PIN_BTN_RIGHT, true);
+#endif
 
 static Screen screen = Screen::Splash;
 static LivePage livePage = LivePage::Values;
 static uint32_t tEnter = 0;      // millis() when current screen was entered
 static uint32_t lastFrame = 0;   // render throttle
+#if !UX_LED
 static bool comboActive = false; // a two-button combo is in progress
+#endif
 
 // USB forwarding bookkeeping
 static unsigned long lastNotifSent = 0;  // BLE notif stamp last forwarded
@@ -45,6 +65,7 @@ static void enter(Screen s) {
   tEnter = millis();
 }
 
+#if !UX_LED
 static bool bothPressed() {
   return digitalRead(PIN_BTN_LEFT) == LOW && digitalRead(PIN_BTN_RIGHT) == LOW;
 }
@@ -52,6 +73,15 @@ static bool bothPressed() {
 static void cyclePage(int dir) {
   int n = (int)LivePage::_count;
   livePage = (LivePage)(((int)livePage + dir + n) % n);
+}
+#endif
+
+// Drop the bond and reboot into the out-of-box scan. Both button schemes end
+// here; the restart is what makes ControllerLink re-read (empty) NVS and scan.
+static void forgetAndRestart() {
+  padLink.forgetBond();
+  delay(40);
+  ESP.restart();
 }
 
 // Enter the live view and give the controller a short "connected" buzz — this
@@ -61,6 +91,7 @@ static void enterLive() {
   enter(Screen::Live);
 }
 
+#if !UX_LED
 // ---------------------------------------------------------------------------
 // Button intents (run from *.tick() in loop, so plain function calls are safe)
 // ---------------------------------------------------------------------------
@@ -92,9 +123,7 @@ static void onLeftLong() {
   }
   if (comboActive) return;
   // Pair a new controller: drop the bond and reboot into the OOBE scan.
-  padLink.forgetBond();
-  delay(40);
-  ESP.restart();
+  forgetAndRestart();
 }
 
 static void onRightLong() {
@@ -105,13 +134,12 @@ static void onRightLong() {
   }
   if (comboActive) return;
   if (screen == Screen::ForgetConfirm) {
-    padLink.forgetBond();
-    delay(40);
-    ESP.restart();
+    forgetAndRestart();
   } else {
     enter(Screen::ForgetConfirm);
   }
 }
+#endif  // !UX_LED
 
 // ---------------------------------------------------------------------------
 // Setup
@@ -121,18 +149,27 @@ void setup() {
   ui.begin();
 
 #if UI_ALIGN_TEST
-  ui.alignTest();
-  while (true) delay(1000);  // hold the pattern; nothing else runs
+  // Nothing else runs. Re-called rather than drawn once because the headless
+  // backend animates an R/G/B cycle here; the TFT pattern is static and simply
+  // redraws itself.
+  while (true) {
+    ui.alignTest();
+    delay(FRAME_MS);
+  }
 #endif
 
   // Bring up the native-USB Xbox controller device before BLE so the PC can
   // enumerate it immediately.
   usb.begin();
 
+#if UX_LED
+  pinMode(BTN_PIN, INPUT_PULLUP);
+#else
   btnL.attachClick(onLeftClick);
   btnR.attachClick(onRightClick);
   btnL.attachLongPressStart(onLeftLong);
   btnR.attachLongPressStart(onRightLong);
+#endif
 
   padLink.begin();
 
@@ -152,6 +189,16 @@ static void frame(uint32_t now) {
     ui.waking();
     return;
   }
+
+#if UX_LED
+  // Same idea for the forget hold: an override rather than a Screen, so the
+  // state machine below is untouched and releasing the button simply resumes
+  // whatever was on screen.
+  if (btnForget.isDown()) {
+    ui.forgetHold(btnForget.progress());
+    return;
+  }
+#endif
 
   switch (screen) {
     case Screen::Splash:
@@ -278,6 +325,11 @@ void loop() {
 
   padLink.loop();       // service NimBLE + rate meter every iteration
   serviceUsb(now);      // forward inputs/rumble with minimal latency
+
+#if UX_LED
+  // BOOT is active-low. update() fires once, the moment the hold completes.
+  if (btnForget.update(digitalRead(BTN_PIN) == LOW, now)) forgetAndRestart();
+#else
   btnL.tick();
   btnR.tick();
 
@@ -286,6 +338,7 @@ void loop() {
       digitalRead(PIN_BTN_RIGHT) == HIGH) {
     comboActive = false;
   }
+#endif
 
   if (now - lastFrame >= FRAME_MS) {
     lastFrame = now;

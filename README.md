@@ -1,15 +1,123 @@
 # Xbox Controller USB Wake Bridge
 
+[![Tests](https://github.com/rosuvlad/xbox-wake-hid-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/rosuvlad/xbox-wake-hid-bridge/actions/workflows/tests.yml)
+[![Build & Release](https://github.com/rosuvlad/xbox-wake-hid-bridge/actions/workflows/release.yml/badge.svg)](https://github.com/rosuvlad/xbox-wake-hid-bridge/actions/workflows/release.yml)
+
 An **ESP32-S3 bridge that turns a Bluetooth Xbox Wireless Controller into a
 wired USB Xbox controller** — and lets the controller **wake a sleeping PC**.
 
 It connects to the controller over Bluetooth LE, presents itself to the PC as a
 genuine Xbox Wireless Controller over native USB, forwards every input with
 minimal latency, forwards **rumble** back to the pad, and sends a **USB remote
-wakeup** when you press the Guide button on a suspended PC. A 0.85" 128×128
-colour screen gives a friendly pairing experience and a live debug view.
+wakeup** when you press the Guide button on a suspended PC.
 
-Hardware: **LilyGO T-QT Pro** (ESP32-S3, 128×128 GC9A01 TFT, two buttons).
+It builds for two kinds of hardware from the same source:
+
+* **LilyGO T-QT Pro** (default) — a 0.85" 128×128 colour screen gives a friendly
+  pairing wizard and a live debug view.
+* **Any generic ESP32-S3 dev board** (headless) — no screen; the onboard RGB LED
+  shows state and the BOOT button re-pairs. See
+  [Headless mode](#headless-mode-generic-esp32-s3--led). The bridge, USB and wake
+  logic are identical — only the presentation layer differs, chosen at compile
+  time by `UX_LED`.
+
+---
+
+## Host PC setup — required for wake (do this first)
+
+> **Read this before anything else.** A perfectly flashed bridge still wakes
+> nothing until the host is set up for it — this is where DIY consoles almost
+> always get stuck, and it applies to every build (screen or headless). The
+> flashing and hardware sections are below.
+
+Three things must be true at once: the bridge stays **powered** while the box
+sleeps, the **firmware** signals wake (✅ done — the config descriptor advertises
+remote-wakeup and the Guide button calls `tud_remote_wakeup()`), and the **OS has
+armed** this device as a wake source. The rest is host configuration, and on a
+DIY Bazzite console it's where wake usually fails.
+
+### 1. BIOS / UEFI
+
+Enter setup (Del/F2 at boot) and set these wherever your board exposes them
+(names vary by vendor):
+
+| Setting | Set to | Why |
+| --- | --- | --- |
+| **ErP / EuP Ready** | **Disabled** | ErP cuts +5V standby to the USB ports in sleep, so the bridge loses power and can't signal. **The single most common cause of "won't wake."** |
+| **Deep Sleep / Deep Sx** | **Disabled** | "Deep Sx" powers USB down in S3; disabling keeps the ports live. |
+| **Wake on USB / USB Wake Support / Resume by USB / Power On By USB** | **Enabled** | Lets a USB device resume the system. |
+| **XHCI Hand-off** | **Enabled** | Hands the USB (xHCI) controller to the OS. |
+| (laptops/handhelds) **USB power in sleep / charging** | **Enabled** | Keeps the port powered while suspended. |
+
+Plug the bridge into a **rear / motherboard USB port** where possible —
+front-panel headers and external hubs are far less reliably powered or
+wake-capable in sleep.
+
+### 2. Pick the sleep state (Bazzite / Linux)
+
+Check which suspend modes the kernel offers (the one in `[brackets]` is active):
+
+```bash
+cat /sys/power/mem_sleep      # e.g. "s2idle [deep]"  or  "[s2idle] deep"
+```
+
+* **`deep`** = ACPI **S3** (suspend-to-RAM) — the classic path; USB remote-wake
+  works via bus resume signalling.
+* **`s2idle`** = suspend-to-idle (freeze) — also wakeable by USB, but *only* if
+  the device's runtime wakeup is enabled (step 3). Many modern boards default to
+  `s2idle`; if yours supports `deep`, prefer it.
+
+Force S3 persistently (immutable-OS friendly — Bazzite is atomic/rpm-ostree):
+
+```bash
+rpm-ostree kargs --append=mem_sleep_default=deep    # then reboot
+```
+
+### 3. Arm the bridge as a wake source — the #1 Linux gotcha
+
+USB HID devices default to **wakeup disabled**. Enable it for our emulated pad
+(and confirm the USB controller above it can wake):
+
+```bash
+# find the bridge (VID 045e / PID 0b13) and enable its wakeup
+for d in /sys/bus/usb/devices/*; do
+  [ -f "$d/idVendor" ] || continue
+  if [ "$(cat $d/idVendor)" = "045e" ] && [ "$(cat $d/idProduct)" = "0b13" ]; then
+    echo "bridge at $d"; echo enabled | sudo tee "$d/power/wakeup"
+  fi
+done
+
+# the xHCI controller must also be a wake source
+grep -i xhc /proc/acpi/wakeup            # want *enabled*; if it says *disabled*:
+# echo XHC | sudo tee /proc/acpi/wakeup  # toggles it (name may be XHC/XHC0/XHCI)
+```
+
+Make it **persistent** with a udev rule (`/etc/udev` is writable on Bazzite):
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b13", ATTR{power/wakeup}="enabled"' \
+  | sudo tee /etc/udev/rules.d/99-xbox-wake-bridge.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+### 4. Test & verify
+
+```bash
+systemctl suspend                              # box sleeps
+# press the Xbox/Guide button — the box should resume
+dmesg | grep -iE 'wake|resume|xhci' | tail     # shows the wake source after resume
+cat /sys/bus/usb/devices/*/power/wakeup         # the bridge's should read "enabled"
+```
+
+On resume the bridge briefly confirms it fired — **"Waking PC"** on the screen
+build, a **white LED strobe** on the headless build. If nothing happens: re-check `power/wakeup` is `enabled`, ErP is
+**off**, and (for `deep`) the port stays powered in sleep.
+
+### Windows (if the same box dual-boots)
+
+Device Manager → **Xbox Wireless Controller** → *Power Management* →
+tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
+(Control Panel → Power Options) so the machine uses real S3.
 
 ---
 
@@ -66,6 +174,102 @@ involved — the bridge is purely `BLE host` ⇄ `USB HID device`.
 Two chip variants are supported via PlatformIO environments:
 `T-QT-Pro-N4R2` (4 MB flash, 2 MB PSRAM — **default**) and `T-QT-Pro-N8`
 (8 MB flash, no PSRAM).
+
+---
+
+## Headless mode (generic ESP32-S3 + LED)
+
+The T-QT Pro's screen is a debug luxury — the actual product (BLE pad ⇄ USB HID
++ wake) needs no display. The `S3-DevKit-LED` environment runs the exact same
+bridge on any bare **ESP32-S3 dev board**, using its **onboard RGB LED** for
+state and its **BOOT button** to re-pair. BLE, USB and the wake path are byte-for
+-byte the same code; only the presentation layer is swapped (`UX_LED`, see
+`src/Ux.h`).
+
+> **Why ESP32-S3 specifically?** The bridge needs a *native USB device*
+> controller (to publish the Xbox HID descriptor and call `tud_remote_wakeup()`)
+> **and** BLE, on one chip. Only the ESP32-S3 has both. A classic ESP32 /
+> WROOM-32 has BLE but no native USB (its USB socket is a CH340/CP2102 serial
+> bridge); the S2 and P4 have USB but no BLE; the C3/C6/H2 USB is a fixed-function
+> serial/JTAG port that can't be a custom HID device. So a "generic ESP32" board
+> only works if it is an **ESP32-S3**.
+
+### Which board / LED pin
+
+Any ESP32-S3 board works, but the onboard-LED pin and flash size vary, so there
+are **two ready-made release environments** — and a build flag for anything else:
+
+| Board | Env / build | LED | Flash |
+| --- | --- | --- | --- |
+| **ESP32-S3-DevKitC-1 v1.1** | `pio run -e S3-DevKit-LED` | GPIO38 | 8 MB |
+| **ESP32-S3 SuperMini** | `pio run -e S3-SuperMini-LED` | GPIO48 | 4 MB |
+| ESP32-S3-DevKitC-1 v1.0 | `PLATFORMIO_BUILD_FLAGS="-DLED_PIN=48" pio run -e S3-DevKit-LED` | GPIO48 | 8 MB |
+| Adafruit QT Py ESP32-S3 | `PLATFORMIO_BUILD_FLAGS="-DLED_PIN=39" pio run -e S3-DevKit-LED` | GPIO39¹ | 8 MB |
+| Seeed XIAO ESP32S3 | `PLATFORMIO_BUILD_FLAGS="-DLED_KIND=LED_MONO -DLED_PIN=21 -DLED_ACTIVE_LOW=1" pio run -e S3-DevKit-LED` | GPIO21, plain | 8 MB |
+
+¹ QT Py also needs GPIO38 driven high as LED power. Both release envs are built
+and published by CI; the flag-override rows reuse an env's partition layout, so
+match the flash size (the SuperMini env is the 4 MB one).
+
+> **The LED pin is the one thing you can't detect from software.** DevKitC-1 v1.0
+> vs v1.1 moved it from GPIO48 to GPIO38; a SuperMini is 48. If the LED stays
+> dark after flashing, the pin is wrong — flip `LED_PIN`. To check in seconds,
+> set `UI_ALIGN_TEST 1` in `Config.h` and reflash: the board cycles **red →
+> green → blue** on boot when the pin is right, and stays dark when it isn't.
+
+Mono boards (a single-colour LED, e.g. the XIAO) fold colour to PWM brightness,
+so states separate by blink rhythm instead of hue.
+
+### LED state map
+
+| LED | Meaning |
+| --- | --- |
+| White ramp | booting |
+| Blue breathe → fast blue blink | pairing: turn pad on → hold its Pair button |
+| Green triple-flash | paired (bond saved) |
+| Amber breathe (slow, 2 s) | reconnecting to a known pad |
+| **Green, dim solid** | **streaming to an awake PC** (the normal good state) |
+| Green breathe | pad linked, PC hasn't enumerated us (unplugged / dead port) |
+| **Amber breathe (dim)** | **PC asleep, bridge armed** — press Guide to wake |
+| Orange flash | rumble (brightness tracks motor strength) |
+| White strobe | remote-wake sent |
+| Red ramp (deepening) | BOOT held — releases the bond at full red (2 s) |
+
+### Controls
+
+The two-button scheme collapses to one hold, because the T-QT's "pair new" and
+"forget" long-presses were already the same operation (forget the bond + reboot
+into pairing):
+
+| Action | Result |
+| --- | --- |
+| **Xbox/Guide button** | wakes the PC when it is suspended |
+| **Hold BOOT ~2 s** | forget the controller and reboot into pairing (red ramp confirms) |
+
+### Building & flashing a devkit
+
+```bash
+pio run -e S3-DevKit-LED    -t upload --upload-port /dev/ttyUSB0   # DevKitC-1
+pio run -e S3-SuperMini-LED -t upload --upload-port /dev/ttyACM0   # SuperMini
+```
+
+Flashing differs by how many USB ports the board has:
+
+* **ESP32-S3-DevKitC-1 — two ports, easy.** It has a separate **UART port** (a
+  CH340/CP2102 with its own auto-reset), so `esptool` drops it into the
+  bootloader by itself — none of the "hold BOOT, unplug, replug" dance the
+  [Flash](#flash) section describes for the screen board. Flash on the **UART**
+  port; the **native USB** port (GPIO19/20) is the gamepad. That UART bridge is
+  also a free **serial console**: because the firmware is HID-only
+  (`ARDUINO_USB_CDC_ON_BOOT=0`), `Serial` maps to UART0, so `Serial.begin(115200)`
+  prints there while native USB stays a pure gamepad — a stand-in for the
+  on-screen diagnostics the headless build drops.
+
+* **ESP32-S3 SuperMini — one port, download mode.** Its single Type-C **is** the
+  native USB, so while the HID firmware runs there is no serial port to
+  auto-reset (same as the T-QT). It has both buttons, so it's quick: **hold BOOT,
+  tap RST, release BOOT** to enter download mode, then flash. One port means no
+  serial console — use the LED (or `UI_ALIGN_TEST`) for feedback.
 
 ---
 
@@ -126,23 +330,30 @@ there is no USB serial console — debugging is done on-screen and PC-side
 ```
 src/
   main.cpp          state machine, button handling, the USB service loop
-  Config.h          pins, colours, timings, the CGRAM offset toggle
+  Config.h          pins, colours, timings; the TFT vs LED (UX_LED) config split
   AppState.h        Screen + LivePage enums
   PadSnapshot.h     decoded controller state (UI-facing, no BLE types)
   BridgeState.h     USB / PC / rumble state  (UI-facing, no USB types)
   ControllerLink.h  NimBLE Xbox wrapper: connect, bond NVS, report builder, rumble
   UsbGamepad.h/.cpp TinyUSB HID device: descriptor, input, rumble output, wake
+  Ux.h              picks the presentation backend at compile time (Ui | UiLed)
   Ui.h / Ui.cpp     full-screen TFT_eSprite renderer — every screen + widget
+  UiLed.h/.cpp      headless backend: the same screens, rendered on one LED
+  LedPattern.h      pure state→colour map (unit-tested; no Arduino)
+  HoldButton.h      pure hold-to-forget detector (unit-tested; no Arduino)
+test/               host-side Unity tests for LedPattern.h + HoldButton.h
 board/              LilyGO board definition (esp32-s3-t-qt-pro.json)
 lib/TFT_eSPI/       vendored, LilyGO-patched GC9A01 driver (do not upgrade)
 scripts/            PlatformIO build hooks: FW_VERSION stamp, `mergebin` target
-.github/workflows/  CI (build every board) + release (tag & publish from main)
+.github/workflows/  tests (native) + CI (build every board) + release (from main)
 ```
 
-The three layers are deliberately decoupled: BLE (`ControllerLink`) and USB
-(`UsbGamepad`) feed plain structs (`PadSnapshot`, `BridgeState`) that the UI
-renders. The display is refreshed at ~30 fps from the main loop and **never from
-a BLE or USB callback** (per spec).
+The layers are deliberately decoupled: BLE (`ControllerLink`) and USB
+(`UsbGamepad`) feed plain structs (`PadSnapshot`, `BridgeState`) that the
+presentation layer renders. That layer is a leaf: `TFT_eSPI` lives only in
+`Ui.cpp`, so the headless build swaps it for `UiLed` (one LED) without touching
+the bridge. The display is refreshed at ~30 fps from the main loop and **never
+from a BLE or USB callback** (per spec).
 
 ---
 
@@ -238,12 +449,28 @@ automatically; `lib/TFT_eSPI` is vendored (the LilyGO-patched GC9A01 driver —
 **do not** replace it with the upstream library or the panel init breaks).
 
 ```bash
-# default 4MB/PSRAM board
+# default 4MB/PSRAM board (LilyGO T-QT Pro, TFT)
 pio run -e T-QT-Pro-N4R2
 
 # 8MB / no-PSRAM variant
 pio run -e T-QT-Pro-N8
+
+# headless: generic ESP32-S3 dev board with onboard LED (see Headless mode)
+pio run -e S3-DevKit-LED
 ```
+
+### Unit tests
+
+The pure logic — the LED state→colour map (`src/LedPattern.h`) and the
+hold-to-forget detector (`src/HoldButton.h`) — is written Arduino-free (time is a
+parameter, no pin access), so it runs on the host with no hardware:
+
+```bash
+pio test -e native
+```
+
+CI runs these on every push and **gates every board build on them** — nothing is
+released while a test is red (see [Releases & CI](#releases--ci)).
 
 Pinned dependencies: `NimBLE-Arduino@1.4.3`,
 `XboxSeriesXControllerESP32_asukiaaa@1.0.9` (pulls
@@ -301,7 +528,11 @@ git tag v0.1.0 && git push origin v0.1.0    # next merge to main -> v0.1.1
 ```
 
 CI reads the board list straight out of `platformio.ini` — every `[env:NAME]` is
-built and released, so adding a board there needs no workflow edit.
+built and released, so adding a board there needs no workflow edit. (The one
+exception is `[env:native]`, the host-side unit-test env, which the discovery
+step filters out of the board matrix — it has no firmware to build.) Every board
+build is gated on `pio test -e native` passing first, so a red test blocks both
+CI and a release.
 
 ### What a release contains
 
@@ -381,99 +612,6 @@ bootloader header. ([PlatformIO has no built-in merge target.](https://github.co
 > `T-QT-Pro-N8` image is built with a 4 MB flash size. That matches what
 > `pio run -t upload` already writes, but it means the N8's upper 4 MB goes
 > unused.
-
----
-
-## Remote wake — BIOS & OS setup
-
-Three things must be true at once: the bridge stays **powered** while the box
-sleeps, the **firmware** signals wake (✅ done — the config descriptor advertises
-remote-wakeup and the Guide button calls `tud_remote_wakeup()`), and the **OS has
-armed** this device as a wake source. The rest is host configuration, and on a
-DIY Bazzite console it's where wake usually fails.
-
-### 1. BIOS / UEFI
-
-Enter setup (Del/F2 at boot) and set these wherever your board exposes them
-(names vary by vendor):
-
-| Setting | Set to | Why |
-| --- | --- | --- |
-| **ErP / EuP Ready** | **Disabled** | ErP cuts +5V standby to the USB ports in sleep, so the bridge loses power and can't signal. **The single most common cause of "won't wake."** |
-| **Deep Sleep / Deep Sx** | **Disabled** | "Deep Sx" powers USB down in S3; disabling keeps the ports live. |
-| **Wake on USB / USB Wake Support / Resume by USB / Power On By USB** | **Enabled** | Lets a USB device resume the system. |
-| **XHCI Hand-off** | **Enabled** | Hands the USB (xHCI) controller to the OS. |
-| (laptops/handhelds) **USB power in sleep / charging** | **Enabled** | Keeps the port powered while suspended. |
-
-Plug the bridge into a **rear / motherboard USB port** where possible —
-front-panel headers and external hubs are far less reliably powered or
-wake-capable in sleep.
-
-### 2. Pick the sleep state (Bazzite / Linux)
-
-Check which suspend modes the kernel offers (the one in `[brackets]` is active):
-
-```bash
-cat /sys/power/mem_sleep      # e.g. "s2idle [deep]"  or  "[s2idle] deep"
-```
-
-* **`deep`** = ACPI **S3** (suspend-to-RAM) — the classic path; USB remote-wake
-  works via bus resume signalling.
-* **`s2idle`** = suspend-to-idle (freeze) — also wakeable by USB, but *only* if
-  the device's runtime wakeup is enabled (step 3). Many modern boards default to
-  `s2idle`; if yours supports `deep`, prefer it.
-
-Force S3 persistently (immutable-OS friendly — Bazzite is atomic/rpm-ostree):
-
-```bash
-rpm-ostree kargs --append=mem_sleep_default=deep    # then reboot
-```
-
-### 3. Arm the bridge as a wake source — the #1 Linux gotcha
-
-USB HID devices default to **wakeup disabled**. Enable it for our emulated pad
-(and confirm the USB controller above it can wake):
-
-```bash
-# find the bridge (VID 045e / PID 0b13) and enable its wakeup
-for d in /sys/bus/usb/devices/*; do
-  [ -f "$d/idVendor" ] || continue
-  if [ "$(cat $d/idVendor)" = "045e" ] && [ "$(cat $d/idProduct)" = "0b13" ]; then
-    echo "bridge at $d"; echo enabled | sudo tee "$d/power/wakeup"
-  fi
-done
-
-# the xHCI controller must also be a wake source
-grep -i xhc /proc/acpi/wakeup            # want *enabled*; if it says *disabled*:
-# echo XHC | sudo tee /proc/acpi/wakeup  # toggles it (name may be XHC/XHC0/XHCI)
-```
-
-Make it **persistent** with a udev rule (`/etc/udev` is writable on Bazzite):
-
-```bash
-echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b13", ATTR{power/wakeup}="enabled"' \
-  | sudo tee /etc/udev/rules.d/99-xbox-wake-bridge.rules
-sudo udevadm control --reload && sudo udevadm trigger
-```
-
-### 4. Test & verify
-
-```bash
-systemctl suspend                              # box sleeps
-# press the Xbox/Guide button — the box should resume
-dmesg | grep -iE 'wake|resume|xhci' | tail     # shows the wake source after resume
-cat /sys/bus/usb/devices/*/power/wakeup         # the bridge's should read "enabled"
-```
-
-On resume the device's screen briefly shows **"Waking PC"** to confirm the
-firmware fired. If nothing happens: re-check `power/wakeup` is `enabled`, ErP is
-**off**, and (for `deep`) the port stays powered in sleep.
-
-### Windows (if the same box dual-boots)
-
-Device Manager → **Xbox Wireless Controller** → *Power Management* →
-tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
-(Control Panel → Power Options) so the machine uses real S3.
 
 ---
 
