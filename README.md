@@ -138,10 +138,12 @@ tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
 
 ## Roadmap
 
-Features the bridge's position makes possible but that aren't built yet. All
-three exploit the same fact: the **NimBLE host can hold several controller
-connections at once**, while the USB side is a descriptor we fully control — so a
-single dongle can juggle multiple pads behind whatever USB identity we choose.
+Features the bridge's position makes possible but that aren't built yet.
+
+**Juggling multiple controllers** — these exploit the fact that the **NimBLE host
+can hold several controller connections at once**, while the USB side is a
+descriptor we fully control, so a single dongle can juggle multiple pads behind
+whatever USB identity we choose.
 
 * **Multiple pads → multiple XInput ports.** Pair 2–4 controllers and present
   them as up to four independent USB gamepads (a composite device, one HID
@@ -152,6 +154,23 @@ single dongle can juggle multiple pads behind whatever USB identity we choose.
 * **Copilot mode.** Merge two physical controllers into one virtual pad — both
   people drive the same character. Useful for accessibility or for teaching a kid,
   mirroring the Xbox "Copilot" feature but for any BLE pad.
+
+**Calibration & correction** — these exploit the other half of the bridge's
+position: it **decodes and re-encodes every analog report**, so it can clean up
+the stick and trigger values on the way through. Firmware-only, applied uniformly
+in every game and on the desktop, with no anti-cheat exposure — it is calibration,
+not automation.
+
+* **Stick drift correction.** A radial deadzone kills jitter and mild drift; a
+  learned centre offset fixes a biased rest position; a learned per-axis range
+  rescales a worn stick back to full travel. Calibrated with an explicit gesture
+  (e.g. hold View+Menu with the sticks untouched) so "at rest" is never guessed,
+  and shown live on the existing pad-diagram view.
+* **Trigger calibration & hair-trigger.** Fix a trigger that rests above zero or
+  never reaches 100%, reshape its pull curve, or fire a digital press past a set
+  threshold — the software version of the Elite controller's trigger locks. The
+  triggers are model 1914's only analog buttons, so this is where any
+  pressure-shaping lives (the face buttons are digital on the wire).
 
 ---
 
