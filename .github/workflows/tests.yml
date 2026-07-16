@@ -1,0 +1,43 @@
+name: Tests
+
+# Host-side unit tests for the pure logic (LedPattern.h, HoldButton.h) via the
+# `native` env. No board, no toolchain download — just the host compiler — so
+# this is seconds, not minutes.
+#
+# Two triggers, one definition:
+#   * push       — runs on every branch including main, so the README badge
+#                  reflects main. Push-only (no pull_request) matches ci.yml's
+#                  convention: same-repo pushes already cover branches once.
+#   * workflow_call — build.yml calls this as a gate, so no board is ever built
+#                  or released while a unit test is red.
+on:
+  push:
+  workflow_call:
+
+# Scope by workflow name too: the standalone "Tests" run and the run nested
+# under "Build" (via build.yml) must not cancel each other on the same ref.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: pio-native-${{ runner.os }}
+          restore-keys: pio-native-
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
+      - name: Run unit tests
+        run: pio test -e native

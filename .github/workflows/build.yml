@@ -15,6 +15,12 @@ on:
         type: boolean
 
 jobs:
+  # Gate every board build on the host-side unit tests. Because release.yml and
+  # ci.yml both build through here, a red test blocks both a branch build and a
+  # release — nothing ships untested.
+  test:
+    uses: ./.github/workflows/tests.yml
+
   boards:
     name: Discover boards
     runs-on: ubuntu-latest
@@ -24,17 +30,20 @@ jobs:
       - uses: actions/checkout@v7
       - id: discover
         # Every [env:NAME] in platformio.ini is a board we ship, so adding a
-        # board there is all it takes to get it built and released. The bare
-        # [env] section carries shared settings and is not a board, so the
-        # trailing colon in the pattern matters.
+        # board there is all it takes to get it built and released. Two things
+        # are deliberately not boards and are filtered out: the shared [fw]
+        # section (no colon, so the pattern already skips it) and [env:native],
+        # which is the host-side unit-test env — `pio run -e native` has no
+        # firmware to build.
         run: |
-          boards=$(sed -n 's/^\[env:\([^]]*\)\]/"\1"/p' platformio.ini | paste -sd, -)
+          boards=$(sed -n 's/^\[env:\([^]]*\)\]/"\1"/p' platformio.ini \
+            | grep -vx '"native"' | paste -sd, -)
           echo "boards=[$boards]" >> "$GITHUB_OUTPUT"
           echo "Building: [$boards]"
 
   build:
     name: ${{ matrix.board }}
-    needs: boards
+    needs: [boards, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
