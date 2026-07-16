@@ -136,6 +136,25 @@ tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
 
 ---
 
+## Roadmap
+
+Features the bridge's position makes possible but that aren't built yet. All
+three exploit the same fact: the **NimBLE host can hold several controller
+connections at once**, while the USB side is a descriptor we fully control — so a
+single dongle can juggle multiple pads behind whatever USB identity we choose.
+
+* **Multiple pads → multiple XInput ports.** Pair 2–4 controllers and present
+  them as up to four independent USB gamepads (a composite device, one HID
+  interface per pad) — couch co-op from a single dongle, no per-player receiver.
+* **Seamless hot-swap / failover.** When a controller's battery dies mid-session,
+  switch to a second bonded pad *under the same USB identity*, so the game sees an
+  uninterrupted controller and never drops the player.
+* **Copilot mode.** Merge two physical controllers into one virtual pad — both
+  people drive the same character. Useful for accessibility or for teaching a kid,
+  mirroring the Xbox "Copilot" feature but for any BLE pad.
+
+---
+
 ## Why
 
 This is built for **DIY [Bazzite](https://bazzite.gg/) game consoles** — homemade
