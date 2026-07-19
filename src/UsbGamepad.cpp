@@ -35,11 +35,16 @@ extern "C" bool tud_suspended(void);
 // ~0 ms and be missed by the host.
 static const uint32_t kResumeSignalMs = 5;
 // A host that resets us itself after resume gets this long before we force
-// re-enumeration.
-static const uint32_t kReenumGraceMs = 500;
-// Soft-disconnect pulse width: long enough for the host to debounce a
-// disconnect, short enough to feel instant.
-static const uint32_t kDetachPulseMs = 60;
+// re-enumeration. Counted from *verified SOFs* (see the probe below), so the
+// host controller is demonstrably up when it expires.
+static const uint32_t kReenumGraceMs = 1000;
+// Soft-disconnect pulse width. Generous on purpose: a PC mid-resume debounces
+// port changes, and a short blip can be coalesced away entirely.
+static const uint32_t kDetachPulseMs = 300;
+// Re-enumeration is retried at this pace for as long as the pathological
+// state persists (SOFs flowing + still unconfigured). Each retry restarts
+// host-side enumeration, so pacing only has to outlast one attempt.
+static const uint32_t kPulseRetryMs = 2500;
 // Bus still idle this long after remote wakeup means the host ignored it
 // (wakeup not armed for us). A disconnect pulse also wakes a wake-armed port,
 // so fall back to that.
@@ -106,6 +111,8 @@ void UsbGamepad::service(uint32_t now) {
     sawSuspend_ = false;
     resumedAt_ = 0;
     wakeSignaledAt_ = 0;
+    lastPulseAt_ = 0;
+    sofArmed_ = false;
     return;
   }
   if (!everMounted_) return;  // never enumerated yet: not our gap to fix
@@ -116,28 +123,46 @@ void UsbGamepad::service(uint32_t now) {
     // here is harmless on a dead cable, so both read as "host asleep".
     sawSuspend_ = true;
     resumedAt_ = 0;
+    sofArmed_ = false;
     if (wakeSignaledAt_ && now - wakeSignaledAt_ >= kWakeFallbackMs) {
-      wakeSignaledAt_ = 0;
       detach(now);
     }
-  } else if (sawSuspend_) {
-    // Bus active again but we are still unconfigured: the fake unplug
-    // destroyed our device state, and the host thinks we never left, so
-    // nobody will re-enumerate us unless we make them.
-    if (!resumedAt_) {
-      resumedAt_ = now ? now : 1;
-    } else if (now - resumedAt_ >= kReenumGraceMs) {
-      sawSuspend_ = false;
-      resumedAt_ = 0;
-      wakeSignaledAt_ = 0;
-      detach(now);
-    }
+    return;
+  }
+  if (!sawSuspend_) return;
+
+  // SUSPSTS dropping is not proof the host is awake — our own resume
+  // signalling clears it too. SOFs are proof: a running host emits one every
+  // millisecond, and GINTSTS.SOF latches even while masked. Clear the latch
+  // once (write-1-to-clear touches only this bit), and only a re-assert
+  // counts as a live host.
+  if (!sofArmed_) {
+    USB0.gintsts = USB_SOF_M;
+    sofArmed_ = true;
+    return;
+  }
+  if (!(USB0.gintsts & USB_SOF_M)) return;  // no fresh SOF yet
+  if (!resumedAt_) resumedAt_ = now ? now : 1;
+
+  // Host verified awake but we are still unconfigured: the fake unplug
+  // destroyed our device state, and the host thinks we never left, so nobody
+  // will re-enumerate us unless we make them. Keep pulsing until it takes —
+  // a resuming PC can debounce away the first attempt, and this state only
+  // exists while recovery is needed.
+  if (now - resumedAt_ >= kReenumGraceMs &&
+      (!lastPulseAt_ || now - lastPulseAt_ >= kPulseRetryMs)) {
+    lastPulseAt_ = now ? now : 1;
+    detach(now);
   }
 }
 
 void UsbGamepad::detach(uint32_t now) {
   USB0.dctl |= USB_SFTDISCON_M;  // drop the D+ pull-up: host sees a disconnect
   reattachAt_ = now ? now : 1;
+  // A pulse supersedes any pending wake fallback: the bus idles again during
+  // the host's attach debounce, and a stale stamp would fire a second pulse
+  // right into the enumeration it is waiting on.
+  wakeSignaledAt_ = 0;
 }
 
 bool UsbGamepad::remoteWakeup() {
@@ -148,8 +173,13 @@ bool UsbGamepad::remoteWakeup() {
   USB0.dctl |= USB_RMTWKUPSIG_M;
   delay(kResumeSignalMs);
   USB0.dctl &= ~USB_RMTWKUPSIG_M;
-  uint32_t now = millis();
-  wakeSignaledAt_ = now ? now : 1;
+  // Keep the *first* press's stamp: a held or mashed Guide button re-enters
+  // here every few ms (SUSPSTS flickers as the bus re-idles), and restamping
+  // would push the detach fallback out forever.
+  if (!wakeSignaledAt_) {
+    uint32_t now = millis();
+    wakeSignaledAt_ = now ? now : 1;
+  }
   return true;
 }
 
