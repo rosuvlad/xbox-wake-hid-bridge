@@ -123,6 +123,16 @@ static const bool INVERT_STICK_Y = true;
 #define PAD_RELEASE_GRACE_MS 60000UL
 #endif
 
+// Suspend must hold this long before the pad is released. A wake attempt in
+// flight flickers the suspend flag (our own resume signalling clears it, the
+// detach fallback fires at 1 s), and without this debounce that flicker read
+// as a fresh sleep — kicking off the very pad that just reconnected to wake
+// the PC. Long enough to outlast one full wake attempt, short enough that
+// the pad still goes dark promptly on a real sleep.
+#ifndef PAD_RELEASE_DEBOUNCE_MS
+#define PAD_RELEASE_DEBOUNCE_MS 2000UL
+#endif
+
 // ---------------------------------------------------------------------------
 // Colour palette (RGB565). Xbox-flavoured, tuned for a tiny dim panel.
 // ---------------------------------------------------------------------------

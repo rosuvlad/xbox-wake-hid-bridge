@@ -284,16 +284,23 @@ static void serviceUsb(uint32_t now) {
   // light off). The grace window must outlive the pad's own link-loss search
   // — resume scanning earlier and the still-searching pad slips back in,
   // which the reconnect trigger below would read as a wake request.
+  static uint32_t suspendedSince = 0;
   static uint32_t padReleasedAt = 0;
   if (bridge.usbSuspended) {
+    if (!suspendedSince) suspendedSince = now ? now : 1;
     if (!padReleasedAt) {
-      padLink.setReleased(true);
-      padReleasedAt = now ? now : 1;
+      // Debounced: a wake attempt in flight flickers the suspend flag and
+      // must not read as a fresh sleep (see PAD_RELEASE_DEBOUNCE_MS).
+      if (now - suspendedSince >= PAD_RELEASE_DEBOUNCE_MS) {
+        padLink.setReleased(true);
+        padReleasedAt = now ? now : 1;
+      }
     } else if (padLink.isReleased() &&
                now - padReleasedAt >= PAD_RELEASE_GRACE_MS) {
       padLink.setReleased(false);  // start listening for the wake reconnect
     }
   } else {
+    suspendedSince = 0;
     padReleasedAt = 0;
     padLink.setReleased(false);
   }
