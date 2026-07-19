@@ -104,6 +104,26 @@ static const uint32_t RECONNECT_HINT_MS = 8000;  // show "hold L to pair new" af
 static const bool INVERT_STICK_Y = true;
 
 // ---------------------------------------------------------------------------
+// Sleep behaviour
+// ---------------------------------------------------------------------------
+// 1 (default): when the PC sleeps, drop the BLE link so the pad can power
+// itself down — Guide light off, battery saved, like a real console. Pressing
+// Guide powers the pad back on, it reconnects, and the reconnect wakes the PC
+// (costs the reconnect, ~2-5 s). 0: hold the link all night; a Guide press on
+// the still-connected pad wakes instantly, at the pad's battery's expense.
+#ifndef SLEEP_RELEASES_PAD
+#define SLEEP_RELEASES_PAD 1
+#endif
+
+// How long after sleep before the bridge listens for the pad again. Must
+// outlive the pad's own link-loss search (~15-20 s, then it powers off):
+// resume scanning any earlier and a still-searching pad slips straight back
+// in — which the wake trigger would read as a phantom "wake the PC".
+#ifndef PAD_RELEASE_GRACE_MS
+#define PAD_RELEASE_GRACE_MS 60000UL
+#endif
+
+// ---------------------------------------------------------------------------
 // Colour palette (RGB565). Xbox-flavoured, tuned for a tiny dim panel.
 // ---------------------------------------------------------------------------
 namespace col {
