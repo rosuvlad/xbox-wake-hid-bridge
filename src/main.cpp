@@ -241,7 +241,10 @@ static void frame(uint32_t now) {
       break;
 
     case Screen::Live: {
-      if (!padLink.isConnected()) {
+      // While the PC sleeps the pad is *meant* to be gone (released so it can
+      // power down) — stay here so the LED tells the "PC asleep" story, not a
+      // spurious "reconnecting" one.
+      if (!padLink.isConnected() && !bridge.usbSuspended) {
         enter(Screen::Reconnecting);
         break;
       }
@@ -275,6 +278,39 @@ static void serviceUsb(uint32_t now) {
   usb.service(now);  // suspend tracking + post-resume recovery
   bridge.usbReady = usb.ready();
   bridge.usbSuspended = usb.suspended();
+
+#if SLEEP_RELEASES_PAD
+  // Console-style sleep: let go of the pad so it powers itself down (Guide
+  // light off). The grace window must outlive the pad's own link-loss search
+  // — resume scanning earlier and the still-searching pad slips back in,
+  // which the reconnect trigger below would read as a wake request.
+  static uint32_t padReleasedAt = 0;
+  if (bridge.usbSuspended) {
+    if (!padReleasedAt) {
+      padLink.setReleased(true);
+      padReleasedAt = now ? now : 1;
+    } else if (padLink.isReleased() &&
+               now - padReleasedAt >= PAD_RELEASE_GRACE_MS) {
+      padLink.setReleased(false);  // start listening for the wake reconnect
+    }
+  } else {
+    padReleasedAt = 0;
+    padLink.setReleased(false);
+  }
+#endif
+
+  // The pad (re)connecting while the host sleeps IS a wake request: the user
+  // pressed Guide to power it on. This holds with or without the release
+  // above — a pad that idled itself off overnight wakes the PC the same way
+  // when it comes back.
+  static bool prevReceiving = false;
+  bool nowReceiving = padLink.isReceiving();
+  if (bridge.usbSuspended && nowReceiving && !prevReceiving &&
+      usb.remoteWakeup()) {
+    wakingUntil = now + 1500;
+    padLink.pulseRumble(45, 22);  // "wake accepted" buzz, console-style
+  }
+  prevReceiving = nowReceiving;
 
   // The Xbox (Guide) button is the wake button; edge-detect its press.
   static bool prevXbox = false;

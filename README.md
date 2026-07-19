@@ -281,7 +281,7 @@ into pairing):
 
 | Action | Result |
 | --- | --- |
-| **Xbox/Guide button** | wakes the PC when it is suspended |
+| **Xbox/Guide button** | wakes the PC when it is suspended (powers the pad on first — it reconnects, then the PC wakes) |
 | **Hold BOOT ~2 s** | forget the controller and reboot into pairing (red ramp confirms) |
 
 ### Building & flashing a devkit
@@ -339,9 +339,16 @@ pass through almost 1:1.
   enable-mask + 4 motor magnitudes 0–100 + duration/delay/loop) → forwarded
   verbatim to the controller's writable HID characteristic via
   `Core::writeHIDReport()`. No scaling — the two formats are identical.
-* **Remote wake (pad → PC):** when the USB bus is suspended, an **Xbox/Guide
-  button** press (edge-detected) calls `tud_remote_wakeup()`, which drives USB
-  resume signalling to wake the host.
+* **Remote wake (pad → PC):** when the PC sleeps the bridge, by default,
+  **releases the BLE link so the pad powers itself down** — Guide light off,
+  battery saved, like a real console (`-DSLEEP_RELEASES_PAD=0` keeps the pad
+  connected all night instead). Pressing **Guide** powers the pad back on; it
+  reconnects to the bridge, and the reconnect triggers USB resume signalling
+  (driven at register level, with a detach-pulse fallback for hosts that never
+  armed remote wakeup). With the release disabled, a Guide press on the
+  still-connected pad fires the same wake path instantly. A 60 s grace after
+  sleep (`PAD_RELEASE_GRACE_MS`) lets the pad finish its own link-loss search
+  before the bridge listens again, so a still-searching pad can't fake a wake.
 * **Bond persistence:** on first pair the controller MAC is stored in NVS
   (`Preferences`), so later boots reconnect silently and firmware updates never
   require re-pairing.
@@ -406,7 +413,7 @@ from a BLE or USB callback** (per spec).
 | **Long Left** | pair a new controller (forgets + reboots into pairing) |
 | **Long Right** | forget controller (confirm, then erase bond) |
 | **Long Both** | diagnostics |
-| **Xbox/Guide button** | wakes the PC when it is suspended |
+| **Xbox/Guide button** | wakes the PC when it is suspended (powers the pad on first — it reconnects, then the PC wakes) |
 
 ### Out-of-box pairing (first run, or after "forget")
 

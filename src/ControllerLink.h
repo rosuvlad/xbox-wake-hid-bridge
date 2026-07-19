@@ -11,6 +11,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <XboxSeriesXControllerESP32_asukiaaa.hpp>
 
@@ -31,7 +32,7 @@ class ControllerLink {
   }
 
   void loop() {
-    if (!core_) return;
+    if (!core_ || released_) return;
     core_->onLoop();
 
     // Rate meter: the library stamps every notification; count the changes.
@@ -57,6 +58,24 @@ class ControllerLink {
       }
     }
   }
+
+  // Host asleep: let go of the pad so it can power itself down (Guide light
+  // off). While released, loop() neither services the BLE core nor scans, so
+  // the pad sees a dead link and sleeps after its own search timeout. The
+  // library only ever reconnects from onLoop() — its disconnect callback just
+  // flags state — so skipping onLoop() is a complete freeze; stopping the
+  // (4 s burst) scan closes the one in-flight window. Un-releasing resumes
+  // the bonded targeted reconnect.
+  void setReleased(bool on) {
+    if (on == released_) return;
+    released_ = on;
+    if (!on) return;
+    auto* c = XboxSeriesXControllerESP32_asukiaaa::pConnectedClient;
+    if (c && c->isConnected()) c->disconnect();
+    NimBLEDevice::getScan()->stop();
+  }
+
+  bool isReleased() const { return released_; }
 
   bool isConnected() const { return core_ && core_->isConnected(); }
 
@@ -166,6 +185,7 @@ class ControllerLink {
   XboxSeriesXControllerESP32_asukiaaa::Core* core_ = nullptr;
   Preferences prefs_;
   String bondAddr_;
+  bool released_ = false;
 
   unsigned long lastNotifAt_ = 0;
   uint16_t rateAccum_ = 0;
