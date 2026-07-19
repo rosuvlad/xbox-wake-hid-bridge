@@ -3,8 +3,47 @@
 
 #include <string.h>
 
-// TinyUSB entry point for signalling remote wakeup (resume a suspended host).
-extern "C" bool tud_remote_wakeup(void);
+#include "soc/usb_reg.h"
+#include "soc/usb_struct.h"
+
+// TinyUSB device-state probes (declared here like tud_remote_wakeup was: the
+// Arduino core links TinyUSB but does not expose tusb.h to sketches).
+extern "C" bool tud_mounted(void);
+extern "C" bool tud_suspended(void);
+
+// Why this file talks to USB0 registers directly
+// ----------------------------------------------
+// The Arduino core's TinyUSB driver cannot see a sleeping PC. Its patched
+// dcd_esp32sx.c posts DCD_EVENT_UNPLUGGED where stock TinyUSB posts
+// DCD_EVENT_SUSPEND (the S3 has no VBUS sensing, so Espressif treats bus-idle
+// as cable-gone), and the resume interrupt is never unmasked. The moment the
+// host suspends, TinyUSB tears the device down: ARDUINO_USB_SUSPEND/RESUME
+// never fire, tud_remote_wakeup() refuses (its state says "unplugged"), and
+// when the host wakes the still-unconfigured device stays dead until it is
+// physically replugged. Present in arduino-esp32 2.0.17 and current 3.x alike
+// (github.com/rosuvlad/xbox-wake-hid-bridge/issues/4).
+//
+// The DWC-OTG controller underneath is fine, so the bridge reads it directly:
+//   suspend  = DSTS.SUSPSTS (bus idle >3 ms) after we were once configured
+//   wake     = drive DCTL.RMTWKUPSIG (resume K-state) ourselves
+//   recovery = a soft-disconnect pulse (DCTL.SFTDISCON) once the bus is active
+//              again, so the host re-enumerates the torn-down device — the
+//              same thing a physical replug does.
+
+// Resume-signalling hold. The spec window is 1-15 ms; the driver's own
+// dcd_remote_wakeup() holds for one FreeRTOS tick, which can round down to
+// ~0 ms and be missed by the host.
+static const uint32_t kResumeSignalMs = 5;
+// A host that resets us itself after resume gets this long before we force
+// re-enumeration.
+static const uint32_t kReenumGraceMs = 500;
+// Soft-disconnect pulse width: long enough for the host to debounce a
+// disconnect, short enough to feel instant.
+static const uint32_t kDetachPulseMs = 60;
+// Bus still idle this long after remote wakeup means the host ignored it
+// (wakeup not armed for us). A disconnect pulse also wakes a wake-armed port,
+// so fall back to that.
+static const uint32_t kWakeFallbackMs = 1000;
 
 // Xbox Wireless Controller (Series, model 1914) Bluetooth-LE HID report
 // descriptor, 283 bytes, verbatim from a real controller dump
@@ -36,15 +75,6 @@ static const uint8_t kReportDescriptor[] = {
     0x08, 0x95, 0x01, 0x91, 0x02, 0xC0, 0xC0,
 };
 
-// Suspend/resume are reported through the Arduino USB event bus.
-static volatile bool s_suspended = false;
-static void usbEventCb(void* arg, esp_event_base_t base, int32_t id,
-                       void* data) {
-  if (base != ARDUINO_USB_EVENTS) return;
-  if (id == ARDUINO_USB_SUSPEND_EVENT) s_suspended = true;
-  else if (id == ARDUINO_USB_RESUME_EVENT) s_suspended = false;
-}
-
 void UsbGamepad::begin() {
   hid_.addDevice(this, sizeof(kReportDescriptor));
   // Present as a genuine Xbox Wireless Controller so Linux/Steam bind the
@@ -56,19 +86,82 @@ void UsbGamepad::begin() {
   // Advertise remote-wakeup in the config descriptor (0x20) so the host lets
   // us resume it from suspend; without this the OS never arms wake-up.
   USB.usbAttributes(0x20);  // TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP
-  USB.onEvent(usbEventCb);
   hid_.begin();
   USB.begin();
 }
 
+void UsbGamepad::service(uint32_t now) {
+  // Finish a running detach pulse: reattach and let the host enumerate us
+  // from scratch, exactly as a physical replug would.
+  if (reattachAt_) {
+    if (now - reattachAt_ >= kDetachPulseMs) {
+      USB0.dctl &= ~USB_SFTDISCON_M;
+      reattachAt_ = 0;
+    }
+    return;
+  }
+
+  if (tud_mounted()) {  // configured and talking: nothing to recover
+    everMounted_ = true;
+    sawSuspend_ = false;
+    resumedAt_ = 0;
+    wakeSignaledAt_ = 0;
+    return;
+  }
+  if (!everMounted_) return;  // never enumerated yet: not our gap to fix
+
+  if (USB0.dsts & USB_SUSPSTS_M) {
+    // Bus idle after we were mounted: the host fell asleep, or the cable is
+    // gone — without VBUS sensing the S3 cannot tell, and everything done
+    // here is harmless on a dead cable, so both read as "host asleep".
+    sawSuspend_ = true;
+    resumedAt_ = 0;
+    if (wakeSignaledAt_ && now - wakeSignaledAt_ >= kWakeFallbackMs) {
+      wakeSignaledAt_ = 0;
+      detach(now);
+    }
+  } else if (sawSuspend_) {
+    // Bus active again but we are still unconfigured: the fake unplug
+    // destroyed our device state, and the host thinks we never left, so
+    // nobody will re-enumerate us unless we make them.
+    if (!resumedAt_) {
+      resumedAt_ = now ? now : 1;
+    } else if (now - resumedAt_ >= kReenumGraceMs) {
+      sawSuspend_ = false;
+      resumedAt_ = 0;
+      wakeSignaledAt_ = 0;
+      detach(now);
+    }
+  }
+}
+
+void UsbGamepad::detach(uint32_t now) {
+  USB0.dctl |= USB_SFTDISCON_M;  // drop the D+ pull-up: host sees a disconnect
+  reattachAt_ = now ? now : 1;
+}
+
 bool UsbGamepad::remoteWakeup() {
-  if (!s_suspended) return false;
-  return tud_remote_wakeup();
+  if (reattachAt_ || !suspended()) return false;
+  // tud_remote_wakeup() verifies state the fake unplug already destroyed, so
+  // drive the resume signalling at the register level: the controller is
+  // still physically attached and the bus is in L2 suspend.
+  USB0.dctl |= USB_RMTWKUPSIG_M;
+  delay(kResumeSignalMs);
+  USB0.dctl &= ~USB_RMTWKUPSIG_M;
+  uint32_t now = millis();
+  wakeSignaledAt_ = now ? now : 1;
+  return true;
 }
 
 bool UsbGamepad::ready() { return hid_.ready(); }
 
-bool UsbGamepad::suspended() { return s_suspended; }
+bool UsbGamepad::suspended() {
+  if (!everMounted_ || reattachAt_) return false;
+  if (!(USB0.dsts & USB_SUSPSTS_M)) return false;
+  // Second arm keeps this correct on a core whose driver reports suspend
+  // properly (device stays mounted, tud_suspended() goes true).
+  return !tud_mounted() || tud_suspended();
+}
 
 bool UsbGamepad::sendInput(const uint8_t* report16) {
   return hid_.SendReport(REPORT_ID_INPUT, report16, INPUT_LEN, 20);

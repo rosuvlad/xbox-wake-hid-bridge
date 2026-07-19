@@ -20,6 +20,7 @@ class UsbGamepad : public USBHIDDevice {
   static const size_t RUMBLE_LEN = 8;
 
   void begin();               // register descriptor, set identity, start USB
+  void service(uint32_t nowMs);  // suspend tracking + post-resume recovery
   bool ready();               // host configured + endpoint free
   bool suspended();           // bus suspended by host (PC asleep)
   bool sendInput(const uint8_t* report16);
@@ -34,7 +35,16 @@ class UsbGamepad : public USBHIDDevice {
   void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) override;
 
  private:
+  void detach(uint32_t nowMs);  // start a soft-disconnect (re-enumeration) pulse
+
   USBHID hid_;
   volatile bool rumbleNew_ = false;
   volatile uint8_t rumble_[RUMBLE_LEN] = {0};
+
+  // Suspend/wake recovery state (see the register-level rationale in the .cpp).
+  bool everMounted_ = false;    // a host has configured us since boot
+  bool sawSuspend_ = false;     // bus went idle after that (host asleep/unplug)
+  uint32_t resumedAt_ = 0;      // bus active again; waiting out re-enum grace
+  uint32_t wakeSignaledAt_ = 0; // remote wakeup sent; awaiting bus resume
+  uint32_t reattachAt_ = 0;     // soft-disconnect pulse start (0 = idle)
 };
