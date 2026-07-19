@@ -44,7 +44,9 @@ class UsbGamepad : public USBHIDDevice {
   // Suspend/wake recovery state (see the register-level rationale in the .cpp).
   bool everMounted_ = false;    // a host has configured us since boot
   bool sawSuspend_ = false;     // bus went idle after that (host asleep/unplug)
-  uint32_t resumedAt_ = 0;      // bus active again; waiting out re-enum grace
+  bool sofArmed_ = false;       // SOF latch cleared; a re-assert = live host
+  uint32_t resumedAt_ = 0;      // host verified awake (fresh SOFs seen)
   uint32_t wakeSignaledAt_ = 0; // remote wakeup sent; awaiting bus resume
+  uint32_t lastPulseAt_ = 0;    // last re-enumeration pulse (retry pacing)
   uint32_t reattachAt_ = 0;     // soft-disconnect pulse start (0 = idle)
 };
