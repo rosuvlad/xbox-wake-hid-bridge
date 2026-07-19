@@ -272,6 +272,7 @@ static void frame(uint32_t now) {
 // Forward controller input to the PC and PC rumble to the controller. Runs
 // every loop iteration (not frame-gated) to keep bridge latency minimal.
 static void serviceUsb(uint32_t now) {
+  usb.service(now);  // suspend tracking + post-resume recovery
   bridge.usbReady = usb.ready();
   bridge.usbSuspended = usb.suspended();
 

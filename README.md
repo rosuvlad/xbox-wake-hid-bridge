@@ -32,7 +32,7 @@ It builds for two kinds of hardware from the same source:
 
 Three things must be true at once: the bridge stays **powered** while the box
 sleeps, the **firmware** signals wake (✅ done — the config descriptor advertises
-remote-wakeup and the Guide button calls `tud_remote_wakeup()`), and the **OS has
+remote-wakeup and the Guide button drives USB resume signalling), and the **OS has
 armed** this device as a wake source. The rest is host configuration, and on a
 DIY Bazzite console it's where wake usually fails.
 
