@@ -49,6 +49,10 @@ static const uint32_t kPulseRetryMs = 2500;
 // (wakeup not armed for us). A disconnect pulse also wakes a wake-armed port,
 // so fall back to that.
 static const uint32_t kWakeFallbackMs = 1000;
+// SOF freshness sampling period. A living host emits one SOF per millisecond,
+// so a sample window with zero SOFs is unambiguous: the host is asleep or
+// gone. This heartbeat — not any line state — is what "host awake" means.
+static const uint32_t kSofStaleMs = 250;
 
 // Xbox Wireless Controller (Series, model 1914) Bluetooth-LE HID report
 // descriptor, 283 bytes, verbatim from a real controller dump
@@ -106,52 +110,54 @@ void UsbGamepad::service(uint32_t now) {
     return;
   }
 
+  // SOF freshness monitor — the shared heartbeat detector. GINTSTS.SOF
+  // latches even while masked; sample and re-arm it every kSofStaleMs
+  // (write-1-to-clear touches only this bit). This is the ONE consumer of
+  // the latch: recovery and the asleep verdict both read sofFresh_, because
+  // two independent clear-and-watch cycles would destroy each other's
+  // evidence.
+  if (!sofCheckAt_ || now - sofCheckAt_ >= kSofStaleMs) {
+    sofCheckAt_ = now ? now : 1;
+    sofFresh_ = (USB0.gintsts & USB_SOF_M) != 0;
+    USB0.gintsts = USB_SOF_M;
+  }
+
   if (tud_mounted()) {  // configured and talking: nothing to recover
     everMounted_ = true;
     sawSuspend_ = false;
     resumedAt_ = 0;
     wakeSignaledAt_ = 0;
     lastPulseAt_ = 0;
-    sofArmed_ = false;
     return;
   }
   if (!everMounted_) return;  // never enumerated yet: not our gap to fix
 
-  if (USB0.dsts & USB_SUSPSTS_M) {
-    // Bus idle after we were mounted: the host fell asleep, or the cable is
-    // gone — without VBUS sensing the S3 cannot tell, and everything done
-    // here is harmless on a dead cable, so both read as "host asleep".
-    sawSuspend_ = true;
-    resumedAt_ = 0;
-    sofArmed_ = false;
-    if (wakeSignaledAt_ && now - wakeSignaledAt_ >= kWakeFallbackMs) {
+  if (sofFresh_) {
+    // Host demonstrably awake but we are still unconfigured: the fake unplug
+    // destroyed our device state, and the host thinks we never left, so
+    // nobody will re-enumerate us unless we make them. Keep pulsing until it
+    // takes — a resuming PC can debounce away the first attempt, and this
+    // state only exists while recovery is needed.
+    if (!sawSuspend_) return;
+    if (!resumedAt_) {
+      resumedAt_ = now ? now : 1;
+    } else if (now - resumedAt_ >= kReenumGraceMs &&
+               (!lastPulseAt_ || now - lastPulseAt_ >= kPulseRetryMs)) {
+      lastPulseAt_ = now ? now : 1;
       detach(now);
     }
     return;
   }
-  if (!sawSuspend_) return;
 
-  // SUSPSTS dropping is not proof the host is awake — our own resume
-  // signalling clears it too. SOFs are proof: a running host emits one every
-  // millisecond, and GINTSTS.SOF latches even while masked. Clear the latch
-  // once (write-1-to-clear touches only this bit), and only a re-assert
-  // counts as a live host.
-  if (!sofArmed_) {
-    USB0.gintsts = USB_SOF_M;
-    sofArmed_ = true;
-    return;
-  }
-  if (!(USB0.gintsts & USB_SOF_M)) return;  // no fresh SOF yet
-  if (!resumedAt_) resumedAt_ = now ? now : 1;
-
-  // Host verified awake but we are still unconfigured: the fake unplug
-  // destroyed our device state, and the host thinks we never left, so nobody
-  // will re-enumerate us unless we make them. Keep pulsing until it takes —
-  // a resuming PC can debounce away the first attempt, and this state only
-  // exists while recovery is needed.
-  if (now - resumedAt_ >= kReenumGraceMs &&
-      (!lastPulseAt_ || now - lastPulseAt_ >= kPulseRetryMs)) {
-    lastPulseAt_ = now ? now : 1;
+  // Bus quiet after we were mounted: the host is asleep. Either in proper L2
+  // suspend (SUSPSTS set — the first phase), or with its controller powered
+  // down outright (deeper platform states some boards enter ~30 min in,
+  // where the idle-J line condition SUSPSTS watches for disappears), or the
+  // cable is gone — without VBUS sensing those are one state, and everything
+  // done here is harmless on a dead cable.
+  sawSuspend_ = true;
+  resumedAt_ = 0;
+  if (wakeSignaledAt_ && now - wakeSignaledAt_ >= kWakeFallbackMs) {
     detach(now);
   }
 }
@@ -167,18 +173,26 @@ void UsbGamepad::detach(uint32_t now) {
 
 bool UsbGamepad::remoteWakeup() {
   if (reattachAt_ || !suspended()) return false;
-  // tud_remote_wakeup() verifies state the fake unplug already destroyed, so
-  // drive the resume signalling at the register level: the controller is
-  // still physically attached and the bus is in L2 suspend.
-  USB0.dctl |= USB_RMTWKUPSIG_M;
-  delay(kResumeSignalMs);
-  USB0.dctl &= ~USB_RMTWKUPSIG_M;
-  // Keep the *first* press's stamp: a held or mashed Guide button re-enters
-  // here every few ms (SUSPSTS flickers as the bus re-idles), and restamping
-  // would push the detach fallback out forever.
-  if (!wakeSignaledAt_) {
-    uint32_t now = millis();
-    wakeSignaledAt_ = now ? now : 1;
+  if (USB0.dsts & USB_SUSPSTS_M) {
+    // Bus in proper L2 suspend: resume signalling has a listener upstream.
+    // tud_remote_wakeup() verifies state the fake unplug already destroyed,
+    // so drive it at the register level.
+    USB0.dctl |= USB_RMTWKUPSIG_M;
+    delay(kResumeSignalMs);
+    USB0.dctl &= ~USB_RMTWKUPSIG_M;
+    // Keep the *first* press's stamp: a held or mashed Guide button re-enters
+    // here every few ms (SUSPSTS flickers as the bus re-idles), and
+    // restamping would push the detach fallback out forever.
+    if (!wakeSignaledAt_) {
+      uint32_t now = millis();
+      wakeSignaledAt_ = now ? now : 1;
+    }
+  } else {
+    // Bus quiet but not in L2: the host powered its controller down (deeper
+    // platform sleep) and resume signalling has no receiver. A connect
+    // change is the one event port hardware still watches in every
+    // wake-armed state — go straight to the detach pulse.
+    detach(millis());
   }
   return true;
 }
@@ -187,10 +201,15 @@ bool UsbGamepad::ready() { return hid_.ready(); }
 
 bool UsbGamepad::suspended() {
   if (!everMounted_ || reattachAt_) return false;
-  if (!(USB0.dsts & USB_SUSPSTS_M)) return false;
-  // Second arm keeps this correct on a core whose driver reports suspend
-  // properly (device stays mounted, tud_suspended() goes true).
-  return !tud_mounted() || tud_suspended();
+  // A core whose driver reports suspend properly keeps us mounted through
+  // it; trust its view.
+  if (tud_mounted()) return tud_suspended();
+  // Fake-unplug core, mounted state gone: a quiet bus is a sleeping host.
+  // SUSPSTS answers instantly but only exists while the host PHY holds L2
+  // idle; the SOF heartbeat going silent covers the deeper phase where that
+  // line condition disappears (and an unplugged-but-powered board — without
+  // VBUS sensing the two are one state).
+  return (USB0.dsts & USB_SUSPSTS_M) || !sofFresh_;
 }
 
 bool UsbGamepad::sendInput(const uint8_t* report16) {

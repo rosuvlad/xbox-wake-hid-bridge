@@ -267,8 +267,8 @@ so states separate by blink rhythm instead of hue.
 | Green triple-flash | paired (bond saved) |
 | Amber breathe (slow, 2 s) | reconnecting to a known pad |
 | **Green, dim solid** | **streaming to an awake PC** (the normal good state) |
-| Green breathe | pad linked, PC hasn't enumerated us (unplugged / dead port) |
-| **Amber breathe (dim)** | **PC asleep, bridge armed** — press Guide to wake |
+| Green breathe | pad linked, no PC seen since power-up (wrong port / flashed on the bench) |
+| **Amber breathe (dim)** | **PC asleep, bridge armed** — press Guide to wake (an unplugged-but-powered board reads the same; the S3 has no VBUS sense) |
 | Orange flash | rumble (brightness tracks motor strength) |
 | White strobe | remote-wake sent |
 | Red ramp (deepening) | BOOT held — releases the bond at full red (2 s) |
