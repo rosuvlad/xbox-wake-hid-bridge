@@ -123,14 +123,15 @@ static const bool INVERT_STICK_Y = true;
 #define PAD_RELEASE_GRACE_MS 60000UL
 #endif
 
-// Suspend must hold this long before the pad is released. A wake attempt in
-// flight flickers the suspend flag (our own resume signalling clears it, the
-// detach fallback fires at 1 s), and without this debounce that flicker read
-// as a fresh sleep — kicking off the very pad that just reconnected to wake
-// the PC. Long enough to outlast one full wake attempt, short enough that
-// the pad still goes dark promptly on a real sleep.
+// Suspend must hold this long before the pad is released. The suspend flag
+// drops briefly during a wake attempt's detach pulse, and a host climbing out
+// of a deep sleep state can take several seconds after that pulse before its
+// frame traffic returns; without this debounce that quiet gap read as a fresh
+// sleep — kicking off the very pad that just reconnected to wake the PC.
+// Long enough to outlast a slow resume, short enough that the pad still goes
+// dark promptly on a real sleep (its own search runs 15-20 s regardless).
 #ifndef PAD_RELEASE_DEBOUNCE_MS
-#define PAD_RELEASE_DEBOUNCE_MS 2000UL
+#define PAD_RELEASE_DEBOUNCE_MS 10000UL
 #endif
 
 // ---------------------------------------------------------------------------
