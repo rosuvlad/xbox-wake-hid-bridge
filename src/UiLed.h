@@ -40,6 +40,9 @@ class UiLed {
 
   void waking();
 
+  // USB-identity switch confirmation, shown until the reboot that applies it.
+  void identitySwitch(bool xusb, uint32_t nowMs);
+
   void reconnecting(uint32_t nowMs, bool showPairHint);
   void diagnostics(const PadSnapshot& s, uint32_t uptimeMs);
   void forgetConfirm();

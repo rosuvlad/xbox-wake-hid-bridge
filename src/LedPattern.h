@@ -132,6 +132,12 @@ inline Rgb reconnecting(uint32_t nowMs) {
 
 inline Rgb waking(uint32_t nowMs) { return blink(nowMs, 120, 50) ? kWhite : kOff; }
 
+// USB-identity switch confirmation: triple-flash the face the bridge is
+// rebooting into. Blue = Xbox 360 / XInput (Windows), green = Series (Linux).
+inline Rgb identitySwitch(bool xusb, uint32_t nowMs) {
+  return flashN(nowMs, 1600, 3, 160) ? (xusb ? kBlue : kGreen) : kOff;
+}
+
 inline Rgb diagnostics(uint32_t) { return kCyan; }
 
 inline Rgb forgetConfirm(uint32_t nowMs) { return blink(nowMs, 300, 50) ? kRed : kOff; }

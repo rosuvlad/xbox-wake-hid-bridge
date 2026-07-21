@@ -311,6 +311,16 @@ static void test_waking_strobes_white() {
   TEST_ASSERT_TRUE((led::waking(120) == led::kWhite));
 }
 
+static void test_identity_switch_flashes_target_colour() {
+  // The colour must name the face being rebooted into, unambiguously.
+  TEST_ASSERT_TRUE((led::identitySwitch(true, 0) == led::kBlue));
+  TEST_ASSERT_TRUE((led::identitySwitch(false, 0) == led::kGreen));
+  // Three pulses of 160 ms (train 960 ms), then dark until the reboot.
+  TEST_ASSERT_TRUE((led::identitySwitch(true, 160) == led::kOff));
+  TEST_ASSERT_TRUE((led::identitySwitch(true, 1000) == led::kOff));
+  TEST_ASSERT_TRUE((led::identitySwitch(false, 1599) == led::kOff));
+}
+
 static void test_diagnostics_is_solid_cyan() {
   TEST_ASSERT_TRUE((led::diagnostics(0) == led::kCyan));
 }
@@ -513,6 +523,7 @@ int main(int, char**) {
   RUN_TEST(test_paired_flashes_green_three_times);
   RUN_TEST(test_reconnecting_breathes_amber_and_stays_lit);
   RUN_TEST(test_waking_strobes_white);
+  RUN_TEST(test_identity_switch_flashes_target_colour);
   RUN_TEST(test_diagnostics_is_solid_cyan);
   RUN_TEST(test_forget_confirm_blinks_red);
   RUN_TEST(test_forget_hold_deepens_red_with_progress);

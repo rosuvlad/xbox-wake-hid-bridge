@@ -19,7 +19,13 @@ class UsbGamepad : public USBHIDDevice {
   static const size_t INPUT_LEN = 16;
   static const size_t RUMBLE_LEN = 8;
 
-  void begin();               // register descriptor, set identity, start USB
+  // Active USB face this boot (read from NVS in begin): false = Xbox Series
+  // HID (Linux), true = wired Xbox 360 XUSB (Windows/XInput — issue #6).
+  static bool xusbIdentity();
+  // Persist the choice; takes effect on the next reboot (re-enumeration).
+  static void setXusbIdentity(bool on);
+
+  void begin();               // pick identity from NVS, set it up, start USB
   void service(uint32_t nowMs);  // suspend tracking + post-resume recovery
   bool ready();               // host configured + endpoint free
   bool suspended();           // bus suspended by host (PC asleep)
