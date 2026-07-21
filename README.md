@@ -119,6 +119,39 @@ Device Manager → **Xbox Wireless Controller** → *Power Management* →
 tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
 (Control Panel → Power Options) so the machine uses real S3.
 
+For actually *playing* on Windows, switch the bridge to its Xbox 360 identity —
+see the next section.
+
+---
+
+## Two USB identities — Linux face and Windows face
+
+The bridge can enumerate as either of two controllers. The choice is stored on
+the device and survives reflashes and power cycles.
+
+| Identity | Enumerates as | Best for | Why |
+| --- | --- | --- | --- |
+| **Xbox Series (HID)** — default | `045E:0B13`, "Xbox Wireless Controller" | **Linux / Bazzite** | The Series pad's own identity: exact 4-motor rumble (incl. trigger impulse), battery level, Share button. |
+| **Xbox 360 (XInput)** | `045E:028E`, "Xbox 360 Controller" | **Windows** | Binds Windows' inbox XInput driver — the only route by which Steam and most Windows games see the bridge at all ([#6](https://github.com/rosuvlad/xbox-wake-hid-bridge/issues/6)). |
+
+Windows never classifies the default identity as an Xbox controller (it is the
+pad's *Bluetooth* PID arriving over USB — a combination in no Windows-side
+database), so it shows up input-working but invisible to Steam. The Xbox 360
+face fixes that natively. Its trade-offs, inherent to the 360 protocol: no
+Share button, two-motor rumble (no trigger impulse), no battery level — which
+is why it isn't the default on Linux, where the Series face is strictly better.
+
+**To switch: hold `View + Menu + D-pad Down` on the controller for 3 seconds**
+(pad connected, PC awake). The pad buzzes, the LED triple-flashes the target
+face — **blue = Xbox 360**, **green = Xbox Series** (the TFT build prints it) —
+and the bridge reboots into it. Hold the same chord again to switch back.
+Verify on the PC: Device Manager (Windows) shows **Xbox 360 Controller** and
+Steam lists it as one.
+
+Ship a different first-boot default with `-DUSB_XUSB_DEFAULT=1` (the chord
+still switches; NVS wins after the first boot). **Wake works identically in
+both identities** — it operates below the driver layer.
+
 ---
 
 ## Status
@@ -133,6 +166,7 @@ tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
 | USB remote wake (Guide button wakes a suspended PC) | ✅ firmware done — needs host-side wake enabled (see below) |
 | Battery / rate / latency telemetry | ✅ shown on the Bridge page |
 | RSSI, BLE connection interval | ✅ shown on the Bridge page (polled 1 Hz) |
+| Dual USB identity (Series HID / X360 XInput for Windows) | ✅ pad-chord switchable, NVS-persisted |
 
 ---
 
@@ -271,6 +305,7 @@ so states separate by blink rhythm instead of hue.
 | **Amber breathe (dim)** | **PC asleep, bridge armed** — press Guide to wake (an unplugged-but-powered board reads the same; the S3 has no VBUS sense) |
 | Orange flash | rumble (brightness tracks motor strength) |
 | White strobe | remote-wake sent |
+| Blue or green triple-flash, then reboot | USB identity switched (blue = Xbox 360/XInput, green = Series) |
 | Red ramp (deepening) | BOOT held — releases the bond at full red (2 s) |
 
 ### Controls
@@ -283,6 +318,7 @@ into pairing):
 | --- | --- |
 | **Xbox/Guide button** | wakes the PC when it is suspended (powers the pad on first — it reconnects, then the PC wakes) |
 | **Hold BOOT ~2 s** | forget the controller and reboot into pairing (red ramp confirms) |
+| **Hold View + Menu + D-pad Down 3 s** (on the pad) | switch USB identity — Series HID ↔ Xbox 360 XInput (blue/green flash, then reboot) |
 
 ### Building & flashing a devkit
 

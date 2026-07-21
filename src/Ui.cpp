@@ -562,3 +562,15 @@ void Ui::waking() {
   centerText("remote wake sent", 106, 1, col::textDim);
   push();
 }
+
+void Ui::identitySwitch(bool xusb, uint32_t nowMs) {
+  (void)nowMs;  // static on the TFT; the LED backend carries the rhythm
+  const uint16_t accent = xusb ? col::blue : col::greenHi;
+  clear();
+  spr_.fillCircle(SCR_W / 2, 40, 22, accent);
+  usbGlyph(SCR_W / 2, 40, 12, col::bg);
+  centerText("USB identity", 74, 2, col::text);
+  centerText(xusb ? "Xbox 360 (XInput)" : "Xbox Series (HID)", 92, 2, accent);
+  centerText("rebooting...", 112, 1, col::textDim);
+  push();
+}

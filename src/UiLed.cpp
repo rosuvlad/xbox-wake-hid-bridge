@@ -54,6 +54,10 @@ void UiLed::reconnecting(uint32_t nowMs, bool) { show(led::reconnecting(nowMs));
 
 void UiLed::waking() { show(led::waking(millis())); }
 
+void UiLed::identitySwitch(bool xusb, uint32_t nowMs) {
+  show(led::identitySwitch(xusb, nowMs));
+}
+
 // Unreachable headless: reaching it on the TFT needs both buttons at once, and
 // the serial console is the better home for this anyway. Mapped so the surface
 // stays identical and a future control can route here.

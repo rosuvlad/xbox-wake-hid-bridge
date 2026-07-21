@@ -3,6 +3,10 @@
 
 #include <string.h>
 
+#include <Preferences.h>
+
+#include "Config.h"
+#include "XusbDevice.h"
 #include "soc/usb_reg.h"
 #include "soc/usb_struct.h"
 
@@ -84,7 +88,46 @@ static const uint8_t kReportDescriptor[] = {
     0x08, 0x95, 0x01, 0x91, 0x02, 0xC0, 0xC0,
 };
 
+// Which USB face is active this boot. Chosen from NVS before enumeration and
+// fixed until the next reboot — see xusbIdentity()/setXusbIdentity().
+static bool s_xusb = false;
+
+bool UsbGamepad::xusbIdentity() { return s_xusb; }
+
+void UsbGamepad::setXusbIdentity(bool on) {
+  Preferences p;
+  p.begin("xbridge", false);
+  p.putUChar("usbIdent", on ? 1 : 0);
+  p.end();
+}
+
 void UsbGamepad::begin() {
+  {
+    Preferences p;
+    p.begin("xbridge", false);
+    s_xusb = p.getUChar("usbIdent", USB_XUSB_DEFAULT) != 0;
+    p.end();
+  }
+
+  if (s_xusb) {
+    // Windows face: wired Xbox 360 controller. The VID/PID alone binds the
+    // inbox XInput driver, which is what makes Steam and games see us —
+    // see XusbDevice.h and issue #6.
+    USB.VID(0x045E);
+    USB.PID(0x028E);
+    USB.manufacturerName("Microsoft");
+    USB.productName("Xbox 360 Controller");
+    USB.firmwareVersion(0x0114);
+    // The real pad is vendor-specific at the device level too.
+    USB.usbClass(0xFF);
+    USB.usbSubClass(0xFF);
+    USB.usbProtocol(0xFF);
+    USB.usbAttributes(0x20);  // TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP
+    xusb::begin();
+    USB.begin();
+    return;
+  }
+
   hid_.addDevice(this, sizeof(kReportDescriptor));
   // Present as a genuine Xbox Wireless Controller so Linux/Steam bind the
   // proper driver (rumble, correct button map).
@@ -197,7 +240,7 @@ bool UsbGamepad::remoteWakeup() {
   return true;
 }
 
-bool UsbGamepad::ready() { return hid_.ready(); }
+bool UsbGamepad::ready() { return s_xusb ? xusb::ready() : hid_.ready(); }
 
 bool UsbGamepad::suspended() {
   if (!everMounted_ || reattachAt_) return false;
@@ -213,6 +256,7 @@ bool UsbGamepad::suspended() {
 }
 
 bool UsbGamepad::sendInput(const uint8_t* report16) {
+  if (s_xusb) return xusb::sendReport16(report16);
   return hid_.SendReport(REPORT_ID_INPUT, report16, INPUT_LEN, 20);
 }
 
@@ -231,6 +275,7 @@ void UsbGamepad::_onOutput(uint8_t report_id, const uint8_t* buffer,
 }
 
 bool UsbGamepad::takeRumble(uint8_t out[RUMBLE_LEN]) {
+  if (s_xusb) return xusb::takeRumble(out);
   if (!rumbleNew_) return false;
   rumbleNew_ = false;
   for (size_t i = 0; i < RUMBLE_LEN; ++i) out[i] = rumble_[i];

@@ -104,6 +104,26 @@ static const uint32_t RECONNECT_HINT_MS = 8000;  // show "hold L to pair new" af
 static const bool INVERT_STICK_Y = true;
 
 // ---------------------------------------------------------------------------
+// USB identity
+// ---------------------------------------------------------------------------
+// The bridge has two USB faces, chosen in NVS and switched with a pad chord:
+//   Xbox Series HID (default) — the Series pad's own identity: 4-motor
+//     rumble, battery level, Share button. The right face for Linux/Bazzite.
+//   Xbox 360 XUSB — the wired 360 pad's identity: binds Windows' inbox
+//     XInput driver, the only route by which Steam and most Windows games
+//     will see the bridge at all (its native identity is in no Windows-side
+//     database — issue #6).
+// Hold View + Menu + D-pad Down for IDENTITY_COMBO_MS to switch: the pad
+// buzzes, the LED/screen shows the target face (blue = Xbox 360, green =
+// Series), and the bridge reboots into it. The choice persists in NVS; this
+// flag only seeds the very first boot.
+#ifndef USB_XUSB_DEFAULT
+#define USB_XUSB_DEFAULT 0
+#endif
+static const uint32_t IDENTITY_COMBO_MS = 3000;  // chord hold to switch
+static const uint32_t IDENTITY_FLASH_MS = 1600;  // confirmation before reboot
+
+// ---------------------------------------------------------------------------
 // Sleep behaviour
 // ---------------------------------------------------------------------------
 // 1 (default): when the PC sleeps, drop the BLE link so the pad can power

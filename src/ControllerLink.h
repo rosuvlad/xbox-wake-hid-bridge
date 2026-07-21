@@ -119,6 +119,14 @@ class ControllerLink {
   // Cheap single-button probe (no snapshot allocation) for the wake trigger.
   bool xboxPressed() const { return core_ && core_->xboxNotif.btnXbox; }
 
+  // The USB-identity chord (View + Menu + D-pad Down), sampled as cheaply as
+  // xboxPressed() — this runs every loop iteration.
+  bool identityComboPressed() const {
+    if (!core_) return false;
+    const auto& n = core_->xboxNotif;
+    return n.btnSelect && n.btnStart && n.btnDirDown;
+  }
+
   // Persist whatever pad we are currently linked to as THE bonded pad.
   void saveBondFromCurrent() {
     if (!core_ || !core_->isConnected()) return;

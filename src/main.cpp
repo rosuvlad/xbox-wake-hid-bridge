@@ -91,6 +91,38 @@ static void enterLive() {
   enter(Screen::Live);
 }
 
+// USB-identity switch: hold View + Menu + D-pad Down on the pad for
+// IDENTITY_COMBO_MS. A pad chord rather than a board button because it works
+// identically on the TFT and headless builds, and the one headless button
+// already owns the forget-hold. Gated on "awake and streaming" so it cannot
+// tangle with the sleep/wake machinery.
+static void serviceIdentityCombo(uint32_t now) {
+  static uint32_t comboSince = 0;
+  bool held = padLink.isReceiving() && !bridge.usbSuspended &&
+              padLink.identityComboPressed();
+  if (!held) {
+    comboSince = 0;
+    return;
+  }
+  if (!comboSince) {
+    comboSince = now ? now : 1;
+    return;
+  }
+  if (now - comboSince < IDENTITY_COMBO_MS) return;
+
+  const bool toXusb = !UsbGamepad::xusbIdentity();
+  UsbGamepad::setXusbIdentity(toXusb);
+  padLink.pulseRumble(45, 22);  // "heard you" — mirrors the connect buzz
+  // Blocking on purpose: the reboot is next, and the confirmation must be
+  // seen. Same idiom as the alignTest loop in setup().
+  const uint32_t t0 = millis();
+  while (millis() - t0 < IDENTITY_FLASH_MS) {
+    ui.identitySwitch(toXusb, millis());
+    delay(FRAME_MS);
+  }
+  ESP.restart();
+}
+
 #if !UX_LED
 // ---------------------------------------------------------------------------
 // Button intents (run from *.tick() in loop, so plain function calls are safe)
@@ -369,6 +401,7 @@ void loop() {
 
   padLink.loop();       // service NimBLE + rate meter every iteration
   serviceUsb(now);      // forward inputs/rumble with minimal latency
+  serviceIdentityCombo(now);  // View+Menu+Down chord -> switch USB face
 
 #if UX_LED
   // BOOT is active-low. update() fires once, the moment the hold completes.
