@@ -10,10 +10,9 @@
 #include "soc/usb_reg.h"
 #include "soc/usb_struct.h"
 
-// TinyUSB device-state probes (declared here like tud_remote_wakeup was: the
+// TinyUSB device-state probe (declared here like tud_remote_wakeup was: the
 // Arduino core links TinyUSB but does not expose tusb.h to sketches).
 extern "C" bool tud_mounted(void);
-extern "C" bool tud_suspended(void);
 
 // Why this file talks to USB0 registers directly
 // ----------------------------------------------
@@ -27,8 +26,17 @@ extern "C" bool tud_suspended(void);
 // physically replugged. Present in arduino-esp32 2.0.17 and current 3.x alike
 // (github.com/rosuvlad/xbox-wake-hid-bridge/issues/4).
 //
+// The unplug lie is not the driver's only blind spot. It reports a bus reset
+// to the stack only when the host *completes* one (the ENUMDONE interrupt); a
+// reset that starts and never ends — which is what a port powering down into
+// SE0 looks like — is handled as internal FIFO cleanup and posts no event at
+// all (verified in the shipped dcd_esp32sx: USBRST and RESETDET call only
+// bus_reset()). A device that was configured when its bus died that way stays
+// tud_mounted() forever, so neither TinyUSB flag can be trusted for liveness.
+//
 // The DWC-OTG controller underneath is fine, so the bridge reads it directly:
-//   suspend  = DSTS.SUSPSTS (bus idle >3 ms) after we were once configured
+//   asleep   = the SOF heartbeat going silent (GINTSTS.SOF latch), with
+//              DSTS.SUSPSTS as a 3 ms fast path — never TinyUSB's flags
 //   wake     = drive DCTL.RMTWKUPSIG (resume K-state) ourselves
 //   recovery = a soft-disconnect pulse (DCTL.SFTDISCON) once the bus is active
 //              again, so the host re-enumerates the torn-down device — the
@@ -165,7 +173,12 @@ void UsbGamepad::service(uint32_t now) {
     USB0.gintsts = USB_SOF_M;
   }
 
-  if (tud_mounted()) {  // configured and talking: nothing to recover
+  // "Configured" alone is not proof of life: a bus that dies into a held
+  // reset leaves tud_mounted() true with no event ever posted (see the header
+  // note). Only a configured device on a bus with a heartbeat is healthy —
+  // on a heartbeatless one we must fall through, or the asleep bookkeeping
+  // below (sawSuspend_, the wake-fallback timer) would be reset every loop.
+  if (tud_mounted() && sofFresh_) {  // configured and talking: nothing to recover
     everMounted_ = true;
     sawSuspend_ = false;
     resumedAt_ = 0;
@@ -244,15 +257,19 @@ bool UsbGamepad::ready() { return s_xusb ? xusb::ready() : hid_.ready(); }
 
 bool UsbGamepad::suspended() {
   if (!everMounted_ || reattachAt_) return false;
-  // A core whose driver reports suspend properly keeps us mounted through
-  // it; trust its view.
-  if (tud_mounted()) return tud_suspended();
-  // Fake-unplug core, mounted state gone: a quiet bus is a sleeping host.
-  // SUSPSTS answers instantly but only exists while the host PHY holds L2
-  // idle; the SOF heartbeat going silent covers the deeper phase where that
-  // line condition disappears (and an unplugged-but-powered board — without
-  // VBUS sensing the two are one state).
-  return (USB0.dsts & USB_SUSPSTS_M) || !sofFresh_;
+  // The heartbeat is the whole verdict; TinyUSB's flags are deliberately not
+  // consulted. Its view goes stale in both directions on this core: suspend
+  // arrives as "unplugged" (mounted lost while the host merely sleeps), and a
+  // configured device whose bus dies into a never-completed reset gets no
+  // event at all, staying mounted forever (see the header note). The old
+  // mounted-first check here hit that second case after a deep platform
+  // transition briefly revived the bus and re-enumerated us ~30 min into
+  // sleep: it then called the sleeping PC awake indefinitely — green LED,
+  // wake disarmed (issue #4, the >30 min reports).
+  //
+  // SUSPSTS still earns its keep as the fast path: it reacts 3 ms after the
+  // bus idles, where the SOF window takes up to two sampling periods.
+  return !sofFresh_ || (USB0.dsts & USB_SUSPSTS_M);
 }
 
 bool UsbGamepad::sendInput(const uint8_t* report16) {
