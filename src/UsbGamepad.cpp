@@ -41,6 +41,20 @@ extern "C" bool tud_mounted(void);
 //   recovery = a soft-disconnect pulse (DCTL.SFTDISCON) once the bus is active
 //              again, so the host re-enumerates the torn-down device — the
 //              same thing a physical replug does.
+//
+// And the fake unplug is stopped at its source: GINTMSK.USBSUSP is cleared
+// right after USB.begin() (see blindDcdToSuspend below), so the DCD never
+// sees the suspend interrupt whose only effect was that teardown. The device
+// now stays configured through every suspend and resume needs no
+// re-enumeration. That matters beyond PC sleep: hosts also suspend an *idle*
+// device while wide awake (Linux USB autosuspend, Windows selective suspend
+// — default-on there), and before this the teardown-plus-recovery-pulse
+// cycle made the bridge visibly disconnect/reconnect on an awake desktop and
+// kicked a freshly connected pad off BLE (issue #4, closing report). The
+// suspend itself is indistinguishable from PC sleep on the bus — the LED may
+// breathe amber under an autosuspending awake host — but with the state
+// intact the first remote wakeup resumes the port in milliseconds and input
+// flows immediately, so the misread is now harmless.
 
 // Resume-signalling hold. The spec window is 1-15 ms; the driver's own
 // dcd_remote_wakeup() holds for one FreeRTOS tick, which can round down to
@@ -100,6 +114,15 @@ static const uint8_t kReportDescriptor[] = {
 // fixed until the next reboot — see xusbIdentity()/setXusbIdentity().
 static bool s_xusb = false;
 
+// Mask the bus-suspend interrupt so the DCD's suspend-as-unplug teardown can
+// never run (header note above). Safe to do once: dcd_init() — which runs
+// synchronously inside USB.begin() — is the only code that sets this bit,
+// and bus_reset() only ORs the endpoint-interrupt bits back into GINTMSK
+// (both verified in the shipped libarduino_tinyusb.a). The suspend *status*
+// keeps latching in GINTSTS/DSTS regardless of the mask, which is all the
+// detection below reads.
+static void blindDcdToSuspend() { USB0.gintmsk &= ~USB_USBSUSPMSK_M; }
+
 bool UsbGamepad::xusbIdentity() { return s_xusb; }
 
 void UsbGamepad::setXusbIdentity(bool on) {
@@ -133,6 +156,7 @@ void UsbGamepad::begin() {
     USB.usbAttributes(0x20);  // TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP
     xusb::begin();
     USB.begin();
+    blindDcdToSuspend();
     return;
   }
 
@@ -148,6 +172,7 @@ void UsbGamepad::begin() {
   USB.usbAttributes(0x20);  // TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP
   hid_.begin();
   USB.begin();
+  blindDcdToSuspend();
 }
 
 void UsbGamepad::service(uint32_t now) {
@@ -171,6 +196,9 @@ void UsbGamepad::service(uint32_t now) {
     sofCheckAt_ = now ? now : 1;
     sofFresh_ = (USB0.gintsts & USB_SOF_M) != 0;
     USB0.gintsts = USB_SOF_M;
+    // Cheap insurance against a future core re-arming the bit (today nothing
+    // does after dcd_init — see blindDcdToSuspend).
+    blindDcdToSuspend();
   }
 
   // "Configured" alone is not proof of life: a bus that dies into a held
@@ -189,11 +217,12 @@ void UsbGamepad::service(uint32_t now) {
   if (!everMounted_) return;  // never enumerated yet: not our gap to fix
 
   if (sofFresh_) {
-    // Host demonstrably awake but we are still unconfigured: the fake unplug
-    // destroyed our device state, and the host thinks we never left, so
-    // nobody will re-enumerate us unless we make them. Keep pulsing until it
-    // takes — a resuming PC can debounce away the first attempt, and this
-    // state only exists while recovery is needed.
+    // Host demonstrably awake but we are still unconfigured. With the
+    // suspend interrupt masked this is rare — a reset the host started but
+    // never followed with configuration — but the host may still think we
+    // never left, so nobody will re-enumerate us unless we make them. Keep
+    // pulsing until it takes — a resuming PC can debounce away the first
+    // attempt, and this state only exists while recovery is needed.
     if (!sawSuspend_) return;
     if (!resumedAt_) {
       resumedAt_ = now ? now : 1;
