@@ -76,14 +76,22 @@ rpm-ostree kargs --append=mem_sleep_default=deep    # then reboot
 ### 3. Arm the bridge as a wake source — the #1 Linux gotcha
 
 USB HID devices default to **wakeup disabled**. Enable it for our emulated pad
-(and confirm the USB controller above it can wake):
+(and confirm the USB controller above it can wake). While there, also pin the
+bridge's **runtime power management off**: power-tuning tools (powertop,
+tlp, tuned's powersave profiles) may *autosuspend* an idle controller on a
+fully awake desktop, and from the device's side of the cable that is
+indistinguishable from the PC going to sleep — the bridge then breathes amber
+and releases the pad as if the box were sleeping. The firmware handles it
+gracefully, but pinning it off keeps the idle behavior honest:
 
 ```bash
-# find the bridge (VID 045e / PID 0b13) and enable its wakeup
+# find the bridge (VID 045e / PID 0b13) and arm wake + disable autosuspend
 for d in /sys/bus/usb/devices/*; do
   [ -f "$d/idVendor" ] || continue
   if [ "$(cat $d/idVendor)" = "045e" ] && [ "$(cat $d/idProduct)" = "0b13" ]; then
-    echo "bridge at $d"; echo enabled | sudo tee "$d/power/wakeup"
+    echo "bridge at $d"
+    echo enabled | sudo tee "$d/power/wakeup"
+    echo on | sudo tee "$d/power/control"     # never autosuspend the bridge
   fi
 done
 
@@ -92,11 +100,14 @@ grep -i xhc /proc/acpi/wakeup            # want *enabled*; if it says *disabled*
 # echo XHC | sudo tee /proc/acpi/wakeup  # toggles it (name may be XHC/XHC0/XHCI)
 ```
 
-Make it **persistent** with a udev rule (`/etc/udev` is writable on Bazzite):
+Make it **persistent** with a udev rule (`/etc/udev` is writable on Bazzite).
+The second line covers the bridge's Xbox 360 identity, if you ever switch:
 
 ```bash
-echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b13", ATTR{power/wakeup}="enabled"' \
-  | sudo tee /etc/udev/rules.d/99-xbox-wake-bridge.rules
+sudo tee /etc/udev/rules.d/99-xbox-wake-bridge.rules <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0b13", ATTR{power/wakeup}="enabled", ATTR{power/control}="on"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="028e", ATTR{power/wakeup}="enabled", ATTR{power/control}="on"
+EOF
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
@@ -116,7 +127,10 @@ build, a **white LED strobe** on the headless build. If nothing happens: re-chec
 ### Windows (if the same box dual-boots)
 
 Device Manager → **Xbox Wireless Controller** → *Power Management* →
-tick **"Allow this device to wake the computer"**, and disable **Fast Startup**
+tick **"Allow this device to wake the computer"**, untick **"Allow the
+computer to turn off this device to save power"** (Windows' selective suspend
+of an idle controller looks like PC sleep to the bridge — same story as the
+Linux autosuspend note above), and disable **Fast Startup**
 (Control Panel → Power Options) so the machine uses real S3.
 
 For actually *playing* on Windows, switch the bridge to its Xbox 360 identity —
