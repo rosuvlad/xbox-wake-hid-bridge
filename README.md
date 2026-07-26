@@ -394,11 +394,13 @@ pass through almost 1:1.
   battery saved, like a real console (`-DSLEEP_RELEASES_PAD=0` keeps the pad
   connected all night instead). Pressing **Guide** powers the pad back on; it
   reconnects to the bridge, and the reconnect triggers USB resume signalling
-  (driven at register level, with a detach-pulse fallback for hosts that never
-  armed remote wakeup). With the release disabled, a Guide press on the
-  still-connected pad fires the same wake path instantly. A 60 s grace after
-  sleep (`PAD_RELEASE_GRACE_MS`) lets the pad finish its own link-loss search
-  before the bridge listens again, so a still-searching pad can't fake a wake.
+  (driven at register level, with an ESP32 PHY-level disconnect pulse as the
+  fallback — both for hosts that never armed remote wakeup, and for a root
+  port powered down too deeply to receive resume signalling at all).
+  With the release disabled, a Guide press on the still-connected pad fires
+  the same wake path instantly. A 60 s grace after sleep
+  (`PAD_RELEASE_GRACE_MS`) lets the pad finish its own link-loss search before
+  the bridge listens again, so a still-searching pad can't fake a wake.
 * **Bond persistence:** on first pair the controller MAC is stored in NVS
   (`Preferences`), so later boots reconnect silently and firmware updates never
   require re-pairing.
