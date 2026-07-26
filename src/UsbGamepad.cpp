@@ -38,7 +38,9 @@ extern "C" bool tud_mounted(void);
 //
 // The DWC-OTG controller underneath is fine, so the bridge reads it directly:
 //   asleep   = the SOF heartbeat going silent (GINTSTS.SOF latch), with
-//              DSTS.SUSPSTS as a 3 ms fast path — never TinyUSB's flags
+//              DSTS.SUSPSTS as a 3 ms fast path — never TinyUSB's flags —
+//              backed by a "nothing has worked for 10 s" backstop for the
+//              states the heartbeat cannot speak for (kUnusableArmsWakeMs)
 //   wake     = drive DCTL.RMTWKUPSIG (resume K-state) ourselves
 //   recovery = a physical-line disconnect pulse (DCTL.SFTDISCON plus the
 //              ESP32 USB wrapper's pad override) once the bus is active again,
@@ -81,6 +83,25 @@ static const uint32_t kWakeFallbackMs = 1000;
 // so a sample window with zero SOFs is unambiguous: the host is asleep or
 // gone. This heartbeat — not any line state — is what "host awake" means.
 static const uint32_t kSofStaleMs = 250;
+// How long the bridge may sit with nothing working before it arms the wake on
+// that basis alone. The heartbeat verdict below is the precise one, but it
+// speaks only for a host that has already configured us once; two real states
+// fall outside it and both used to disarm the wake permanently:
+//
+//   * the bridge reset while the host slept (brownout, watchdog, a glitch on
+//     a port that keeps VBUS through sleep). everMounted_ is false again, and
+//     nothing can ever set it: the only host that could enumerate us is the
+//     sleeping one we are supposed to wake. Issue #4's >1 h reports look
+//     exactly like this — breathing green all night, Guide button inert.
+//   * anything that leaves the SOF latch reading alive while the device is
+//     unusable, which would make the heartbeat lie in the safe-looking
+//     direction.
+//
+// Ten seconds is far past enumeration (well under a second even on a slow
+// host, and re-checked every tick), so a healthy boot never trips it; when it
+// does trip, the host is asleep, off, or the cable is dead — arming is right
+// in the first case and costs nothing in the others.
+static const uint32_t kUnusableArmsWakeMs = 10000;
 
 // Xbox Wireless Controller (Series, model 1914) Bluetooth-LE HID report
 // descriptor, 283 bytes, verbatim from a real controller dump
@@ -215,7 +236,17 @@ void UsbGamepad::begin() {
   blindDcdToSuspend();
 }
 
+bool UsbGamepad::unusableTooLong(uint32_t now) const {
+  // Zero means service() has not run yet, so there is nothing to measure from.
+  return lastAliveAt_ && now - lastAliveAt_ >= kUnusableArmsWakeMs;
+}
+
 void UsbGamepad::service(uint32_t now) {
+  // Start the liveness clock on the first tick. Everything below measures how
+  // long we have been unusable, and boot is where that window opens — a board
+  // that came up into a sleeping host has been unusable since power-on.
+  if (!lastAliveAt_) lastAliveAt_ = now ? now : 1;
+
   // Finish a running detach pulse: reattach and let the host enumerate us
   // from scratch, exactly as a physical replug would.
   if (reattachAt_) {
@@ -248,13 +279,18 @@ void UsbGamepad::service(uint32_t now) {
   // below (sawSuspend_, the wake-fallback timer) would be reset every loop.
   if (tud_mounted() && sofFresh_) {  // configured and talking: nothing to recover
     everMounted_ = true;
+    lastAliveAt_ = now ? now : 1;
     sawSuspend_ = false;
     resumedAt_ = 0;
     wakeSignaledAt_ = 0;
     lastPulseAt_ = 0;
     return;
   }
-  if (!everMounted_) return;  // never enumerated yet: not our gap to fix
+  // Never enumerated, and still inside the window where that is just a host
+  // which has not got to us yet: not our gap to fix. Past the window we fall
+  // through instead of returning, which is what lets a bridge that reset
+  // mid-sleep reach the wake-fallback below (see kUnusableArmsWakeMs).
+  if (!everMounted_ && !unusableTooLong(now)) return;
 
   if (sofFresh_) {
     // Host demonstrably awake but we are still unconfigured. With the
@@ -325,7 +361,7 @@ bool UsbGamepad::remoteWakeup() {
 bool UsbGamepad::ready() { return s_xusb ? xusb::ready() : hid_.ready(); }
 
 bool UsbGamepad::suspended() {
-  if (!everMounted_ || reattachAt_) return false;
+  if (reattachAt_) return false;
   // The heartbeat is the whole verdict; TinyUSB's flags are deliberately not
   // consulted. Its view goes stale in both directions on this core: suspend
   // arrives as "unplugged" (mounted lost while the host merely sleeps), and a
@@ -338,7 +374,12 @@ bool UsbGamepad::suspended() {
   //
   // SUSPSTS still earns its keep as the fast path: it reacts 3 ms after the
   // bus idles, where the SOF window takes up to two sampling periods.
-  return !sofFresh_ || (USB0.dsts & USB_SUSPSTS_M);
+  if (everMounted_ && (!sofFresh_ || (USB0.dsts & USB_SUSPSTS_M))) return true;
+  // Backstop for the two states the heartbeat cannot speak for — a bridge
+  // that reset while the host slept (everMounted_ false, and no host awake to
+  // ever set it) and a latch that reads alive while nothing works. Costs
+  // nothing on a healthy bus: the clock above is restamped every tick.
+  return unusableTooLong(millis());
 }
 
 bool UsbGamepad::sendInput(const uint8_t* report16) {

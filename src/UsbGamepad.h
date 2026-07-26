@@ -42,6 +42,9 @@ class UsbGamepad : public USBHIDDevice {
 
  private:
   void detach(uint32_t nowMs);  // start a PHY-level disconnect/re-enumeration pulse
+  // True once nothing has worked for kUnusableArmsWakeMs — the backstop that
+  // arms the wake when the heartbeat verdict cannot (see the .cpp).
+  bool unusableTooLong(uint32_t nowMs) const;
 
   USBHID hid_;
   volatile bool rumbleNew_ = false;
@@ -52,6 +55,7 @@ class UsbGamepad : public USBHIDDevice {
   bool sawSuspend_ = false;     // bus went quiet after that (host asleep/unplug)
   bool sofFresh_ = false;       // SOFs seen in the last sampling window
   uint32_t sofCheckAt_ = 0;     // last SOF latch sample-and-rearm
+  uint32_t lastAliveAt_ = 0;    // last tick we were demonstrably usable (0 = pre-boot)
   uint32_t resumedAt_ = 0;      // host verified awake (fresh SOFs seen)
   uint32_t wakeSignaledAt_ = 0; // remote wakeup sent; awaiting bus resume
   uint32_t lastPulseAt_ = 0;    // last re-enumeration pulse (retry pacing)

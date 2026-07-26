@@ -16,6 +16,9 @@
 // controller" were already the same operation on both long-press paths below.
 #include <Arduino.h>
 
+#include <Preferences.h>
+#include <esp_system.h>
+
 #if !UX_LED
 #include <OneButton.h>
 #endif
@@ -174,10 +177,51 @@ static void onRightLong() {
 #endif  // !UX_LED
 
 // ---------------------------------------------------------------------------
+// Boot health
+// ---------------------------------------------------------------------------
+// A bridge that resets while the PC sleeps leaves no trace anywhere else. The
+// host is not awake to log the USB drop, the board is back up long before
+// anyone looks at it, and the pad reconnects over BLE as if nothing happened —
+// so the only symptom is a wake button that stopped working (issue #4's >1 h
+// reports). The firmware now recovers from that on its own (see
+// kUnusableArmsWakeMs in UsbGamepad.cpp); this counter is how we tell a
+// brownout-prone board apart from a firmware bug next time, instead of
+// guessing again.
+//
+// Counting is all this does deliberately: brownouts are a power-delivery
+// symptom (thin cable, weak port, a board that runs warm), and the honest
+// responses are the recovery above plus a number the user can report — not a
+// blind attempt to trim current draw for a cause nobody has confirmed yet.
+static void recordBootHealth() {
+  const esp_reset_reason_t why = esp_reset_reason();
+  const bool brownout = (why == ESP_RST_BROWNOUT);
+  const bool fault = (why == ESP_RST_PANIC || why == ESP_RST_TASK_WDT ||
+                      why == ESP_RST_INT_WDT || why == ESP_RST_WDT);
+
+  Preferences p;
+  p.begin("xbridge", false);
+  uint32_t brownouts = p.getUInt("brownouts", 0);
+  uint32_t faults = p.getUInt("faults", 0);
+  // NVS skips writes that would not change the stored value, so the
+  // unconditional putUChar costs a flash erase only when the reason differs.
+  if (brownout) p.putUInt("brownouts", ++brownouts);
+  if (fault) p.putUInt("faults", ++faults);
+  p.putUChar("lastReset", (uint8_t)why);
+  p.end();
+
+  // Straight to Serial rather than log_*: CORE_DEBUG_LEVEL is 1 in release
+  // builds, which would swallow anything below an error.
+  Serial.printf("boot: reset=%d%s brownouts=%u faults=%u\n", (int)why,
+                brownout ? " (BROWNOUT)" : (fault ? " (FAULT)" : ""),
+                brownouts, faults);
+}
+
+// ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
+  recordBootHealth();
   ui.begin();
 
 #if UI_ALIGN_TEST

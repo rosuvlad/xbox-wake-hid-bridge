@@ -124,6 +124,20 @@ On resume the bridge briefly confirms it fired — **"Waking PC"** on the screen
 build, a **white LED strobe** on the headless build. If nothing happens: re-check `power/wakeup` is `enabled`, ErP is
 **off**, and (for `deep`) the port stays powered in sleep.
 
+The wake stays armed even if the bridge itself resets mid-sleep (a brownout on
+a marginal cable or port). It cannot re-enumerate while the PC is asleep, so
+after ten seconds with no USB life it arms the wake anyway rather than waiting
+for a host that only *it* can wake. Each boot prints its reset reason and a
+running fault count over the serial console at 115200 baud:
+
+```
+boot: reset=1 brownouts=0 faults=0     # 1 = normal power-on
+boot: reset=9 (BROWNOUT) brownouts=3 faults=0
+```
+
+Repeated brownouts point at power delivery, not firmware — try a shorter or
+thicker USB cable, or a rear-panel port straight off the motherboard.
+
 ### Windows (if the same box dual-boots)
 
 Device Manager → **Xbox Wireless Controller** → *Power Management* →
