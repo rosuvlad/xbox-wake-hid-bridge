@@ -9,6 +9,8 @@
 #include "XusbDevice.h"
 #include "soc/usb_reg.h"
 #include "soc/usb_struct.h"
+#include "soc/usb_wrap_reg.h"
+#include "soc/usb_wrap_struct.h"
 
 // TinyUSB device-state probe (declared here like tud_remote_wakeup was: the
 // Arduino core links TinyUSB but does not expose tusb.h to sketches).
@@ -38,9 +40,9 @@ extern "C" bool tud_mounted(void);
 //   asleep   = the SOF heartbeat going silent (GINTSTS.SOF latch), with
 //              DSTS.SUSPSTS as a 3 ms fast path — never TinyUSB's flags
 //   wake     = drive DCTL.RMTWKUPSIG (resume K-state) ourselves
-//   recovery = a soft-disconnect pulse (DCTL.SFTDISCON) once the bus is active
-//              again, so the host re-enumerates the torn-down device — the
-//              same thing a physical replug does.
+//   recovery = a physical-line disconnect pulse (DCTL.SFTDISCON plus the
+//              ESP32 USB wrapper's pad override) once the bus is active again,
+//              so the host re-enumerates the device.
 //
 // And the fake unplug is stopped at its source: GINTMSK.USBSUSP is cleared
 // right after USB.begin() (see blindDcdToSuspend below), so the DCD never
@@ -64,8 +66,8 @@ static const uint32_t kResumeSignalMs = 5;
 // re-enumeration. Counted from *verified SOFs* (see the probe below), so the
 // host controller is demonstrably up when it expires.
 static const uint32_t kReenumGraceMs = 1000;
-// Soft-disconnect pulse width. Generous on purpose: a PC mid-resume debounces
-// port changes, and a short blip can be coalesced away entirely.
+// Physical-line disconnect pulse width. Generous on purpose: a PC mid-resume
+// debounces port changes, and a short blip can be coalesced away entirely.
 static const uint32_t kDetachPulseMs = 300;
 // Re-enumeration is retried at this pace for as long as the pathological
 // state persists (SOFs flowing + still unconfigured). Each retry restarts
@@ -113,6 +115,44 @@ static const uint8_t kReportDescriptor[] = {
 // Which USB face is active this boot. Chosen from NVS before enumeration and
 // fixed until the next reboot — see xusbIdentity()/setXusbIdentity().
 static bool s_xusb = false;
+
+// ESP32-S2/S3 need both layers for a disconnect the host can see. DWC2's
+// SFTDISCON updates the controller state, but does not reliably force the
+// internal PHY pads to the disconnected SE0 line state, so upstream TinyUSB
+// drives both D+/D- pulls low "in addition to dwc2's dctrl" (hathach/tinyusb
+// 0bb7b99). The values below are that commit's, bit for bit.
+//
+// Nothing in this build competes for these bits: the Arduino core never runs
+// ESP-IDF's usb_phy device init, and the shipped dcd_esp32sx references
+// USB_WRAP only at .date (the usb-persist magic), so otg_conf sits at its
+// reset default of pad_pull_override=0 (both verified by disassembling
+// libhal.a and libarduino_tinyusb.a). Two consequences: SFTDISCON alone was
+// only *releasing* D+ and leaving SE0 to the host's own pulldowns, where the
+// override actively drives both lines low; and clearing the whole mask on
+// reconnect restores exactly the state the device has enumerated in all
+// along, so the pulse cannot strand us disconnected.
+//
+// Whether that stronger disconnect is what finally reaches a root port with
+// its receiver powered down — where resume signalling has nobody listening —
+// is the untested premise of this change, not a verified one.
+static const uint32_t kUsbPadPullMask =
+    USB_WRAP_PAD_PULL_OVERRIDE_M | USB_WRAP_DP_PULLUP_M |
+    USB_WRAP_DP_PULLDOWN_M | USB_WRAP_DM_PULLUP_M |
+    USB_WRAP_DM_PULLDOWN_M;
+
+static void forceUsbDisconnect() {
+  uint32_t conf = USB_WRAP.otg_conf.val;
+  conf &= ~kUsbPadPullMask;
+  conf |= USB_WRAP_PAD_PULL_OVERRIDE_M | USB_WRAP_DP_PULLDOWN_M |
+          USB_WRAP_DM_PULLDOWN_M;
+  USB_WRAP.otg_conf.val = conf;
+  USB0.dctl |= USB_SFTDISCON_M;
+}
+
+static void forceUsbConnect() {
+  USB_WRAP.otg_conf.val &= ~kUsbPadPullMask;
+  USB0.dctl &= ~USB_SFTDISCON_M;
+}
 
 // Mask the bus-suspend interrupt so the DCD's suspend-as-unplug teardown can
 // never run (header note above). Safe to do once: dcd_init() — which runs
@@ -180,7 +220,7 @@ void UsbGamepad::service(uint32_t now) {
   // from scratch, exactly as a physical replug would.
   if (reattachAt_) {
     if (now - reattachAt_ >= kDetachPulseMs) {
-      USB0.dctl &= ~USB_SFTDISCON_M;
+      forceUsbConnect();
       reattachAt_ = 0;
     }
     return;
@@ -248,7 +288,7 @@ void UsbGamepad::service(uint32_t now) {
 }
 
 void UsbGamepad::detach(uint32_t now) {
-  USB0.dctl |= USB_SFTDISCON_M;  // drop the D+ pull-up: host sees a disconnect
+  forceUsbDisconnect();
   reattachAt_ = now ? now : 1;
   // A pulse supersedes any pending wake fallback: the bus idles again during
   // the host's attach debounce, and a stale stamp would fire a second pulse

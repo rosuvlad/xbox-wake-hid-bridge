@@ -41,7 +41,7 @@ class UsbGamepad : public USBHIDDevice {
   void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) override;
 
  private:
-  void detach(uint32_t nowMs);  // start a soft-disconnect (re-enumeration) pulse
+  void detach(uint32_t nowMs);  // start a PHY-level disconnect/re-enumeration pulse
 
   USBHID hid_;
   volatile bool rumbleNew_ = false;
@@ -55,5 +55,5 @@ class UsbGamepad : public USBHIDDevice {
   uint32_t resumedAt_ = 0;      // host verified awake (fresh SOFs seen)
   uint32_t wakeSignaledAt_ = 0; // remote wakeup sent; awaiting bus resume
   uint32_t lastPulseAt_ = 0;    // last re-enumeration pulse (retry pacing)
-  uint32_t reattachAt_ = 0;     // soft-disconnect pulse start (0 = idle)
+  uint32_t reattachAt_ = 0;     // physical-line disconnect start (0 = idle)
 };
