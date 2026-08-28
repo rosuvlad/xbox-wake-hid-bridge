@@ -348,6 +348,107 @@ static void test_forget_hold_clamps_out_of_range_progress() {
   TEST_ASSERT_TRUE((led::forgetHold(-1.0f) == led::forgetHold(0.0f)));
 }
 
+// ---------------------------------------------------------------------------
+// bootHealth
+// ---------------------------------------------------------------------------
+
+// Count colour-on pulses across one full readout period, sampling finely enough
+// that a pulse cannot be stepped over.
+static int countPulses(uint8_t brownouts, uint8_t faults, Rgb colour,
+                       uint32_t spanMs) {
+  int pulses = 0;
+  bool on = false;
+  for (uint32_t t = 0; t < spanMs; t++) {
+    const bool nowOn = (led::bootHealth(t, brownouts, faults) == colour);
+    if (nowOn && !on) pulses++;
+    on = nowOn;
+  }
+  return pulses;
+}
+
+static void test_boot_health_clean_history_breathes_green() {
+  // The reassuring case has to be unmistakably *not* a flash train, or a user
+  // counting blinks would report a fault that never happened.
+  bool sawLit = false;
+  for (uint32_t t = 0; t < 4000; t += 10) {
+    const Rgb c = led::bootHealth(t, 0, 0);
+    TEST_ASSERT_EQUAL_UINT8(0, c.r);
+    if (c.g > 0) sawLit = true;
+  }
+  TEST_ASSERT_TRUE(sawLit);
+  // Peak of the breathe: full green at half the 2 s period.
+  TEST_ASSERT_TRUE((led::bootHealth(1000, 0, 0) == led::kGreen));
+}
+
+static void test_boot_health_blinks_brownouts_in_red() {
+  for (uint8_t n = 1; n <= 5; n++) {
+    const uint32_t period = (uint32_t)n * led::kHealthFlashMs * 2 + led::kHealthGapMs;
+    TEST_ASSERT_EQUAL_INT(n, countPulses(n, 0, led::kRed, period));
+  }
+}
+
+static void test_boot_health_blinks_faults_in_blue() {
+  for (uint8_t n = 1; n <= 5; n++) {
+    const uint32_t period = (uint32_t)n * led::kHealthFlashMs * 2 + led::kHealthGapMs;
+    TEST_ASSERT_EQUAL_INT(n, countPulses(0, n, led::kBlue, period));
+  }
+}
+
+static void test_boot_health_plays_both_trains_without_bleeding_together() {
+  // 3 brownouts and 2 faults must read as "3 red, then 2 blue" — never as one
+  // train of five, and never with a colour appearing inside the other's train.
+  const uint32_t period = (uint32_t)3 * led::kHealthFlashMs * 2 +
+                          (uint32_t)2 * led::kHealthFlashMs * 2 +
+                          led::kHealthGapMs * 2;
+  TEST_ASSERT_EQUAL_INT(3, countPulses(3, 2, led::kRed, period));
+  TEST_ASSERT_EQUAL_INT(2, countPulses(3, 2, led::kBlue, period));
+
+  // The red train finishes before the first blue pulse starts.
+  uint32_t lastRed = 0, firstBlue = period;
+  for (uint32_t t = 0; t < period; t++) {
+    const Rgb c = led::bootHealth(t, 3, 2);
+    if (c == led::kRed) lastRed = t;
+    if (c == led::kBlue && firstBlue == period) firstBlue = t;
+  }
+  TEST_ASSERT_TRUE(lastRed < firstBlue);
+}
+
+static void test_boot_health_caps_the_flash_count() {
+  // Past the cap the train must stop growing, or the readout would run for
+  // minutes and still be uncountable.
+  const uint32_t period =
+      (uint32_t)led::kHealthFlashCap * led::kHealthFlashMs * 2 + led::kHealthGapMs;
+  TEST_ASSERT_EQUAL_INT(led::kHealthFlashCap,
+                        countPulses(led::kHealthFlashCap, 0, led::kRed, period));
+  TEST_ASSERT_EQUAL_INT(led::kHealthFlashCap, countPulses(200, 0, led::kRed, period));
+  TEST_ASSERT_EQUAL_INT(led::kHealthFlashCap, countPulses(255, 0, led::kRed, period));
+}
+
+static void test_boot_health_repeats_so_a_miscount_costs_only_a_second_look() {
+  const uint32_t period = (uint32_t)2 * led::kHealthFlashMs * 2 + led::kHealthGapMs;
+  for (uint32_t t = 0; t < period; t += 3) {
+    TEST_ASSERT_TRUE((led::bootHealth(t, 2, 0) == led::bootHealth(t + period, 2, 0)));
+  }
+}
+
+static void test_boot_health_starts_lit_so_the_first_flash_is_never_missed() {
+  // The readout is phase-anchored to the button press; if it opened dark the
+  // user would be counting from an arbitrary point in the train.
+  TEST_ASSERT_TRUE((led::bootHealth(0, 1, 0) == led::kRed));
+  TEST_ASSERT_TRUE((led::bootHealth(0, 0, 1) == led::kBlue));
+}
+
+static void test_boot_health_survives_millis_rollover() {
+  // elapsedMs is a difference, so it cannot itself wrap — but the modulo maths
+  // must still hold at the top of the range.
+  const uint32_t period = (uint32_t)2 * led::kHealthFlashMs * 2 + led::kHealthGapMs;
+  const uint32_t base = 0xFFFFFFFFu - period;
+  for (uint32_t i = 0; i < period; i += 5) {
+    const Rgb c = led::bootHealth(base + i, 2, 0);
+    TEST_ASSERT_TRUE(c == led::kRed || c == led::kOff);
+  }
+}
+
 static void test_align_test_cycles_all_three_channels() {
   // The whole point is proving LED_PIN and the colour order, so all three
   // channels must be exercised.
@@ -529,6 +630,15 @@ int main(int, char**) {
   RUN_TEST(test_forget_hold_deepens_red_with_progress);
   RUN_TEST(test_forget_hold_clamps_out_of_range_progress);
   RUN_TEST(test_align_test_cycles_all_three_channels);
+
+  RUN_TEST(test_boot_health_clean_history_breathes_green);
+  RUN_TEST(test_boot_health_blinks_brownouts_in_red);
+  RUN_TEST(test_boot_health_blinks_faults_in_blue);
+  RUN_TEST(test_boot_health_plays_both_trains_without_bleeding_together);
+  RUN_TEST(test_boot_health_caps_the_flash_count);
+  RUN_TEST(test_boot_health_repeats_so_a_miscount_costs_only_a_second_look);
+  RUN_TEST(test_boot_health_starts_lit_so_the_first_flash_is_never_missed);
+  RUN_TEST(test_boot_health_survives_millis_rollover);
 
   RUN_TEST(test_live_streaming_is_steady_green);
   RUN_TEST(test_live_suspended_breathes_amber);

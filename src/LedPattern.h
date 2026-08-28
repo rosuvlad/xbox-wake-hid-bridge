@@ -40,6 +40,17 @@ constexpr Rgb kCyan{0, 255, 255};
 // (Ui.cpp livePad/liveBridge) so both backends feel the same.
 constexpr uint32_t kRumbleHoldMs = 400;
 
+// Boot-health readout timing. Flashes are long enough to count by eye without
+// the train dragging on, and the gap is unmistakably longer than the flash so
+// "where does the count restart" never needs guessing.
+constexpr uint32_t kHealthFlashMs = 200;
+constexpr uint32_t kHealthGapMs = 1100;
+
+// Counts above this render as this many flashes. Nobody counts eleven blinks
+// correctly, and past a handful the exact number stops changing the answer:
+// the board is browning out, full stop.
+constexpr uint8_t kHealthFlashCap = 9;
+
 // ---------------------------------------------------------------------------
 // Scalar helpers
 // ---------------------------------------------------------------------------
@@ -145,6 +156,47 @@ inline Rgb forgetConfirm(uint32_t nowMs) { return blink(nowMs, 300, 50) ? kRed :
 // Hold-to-forget: red deepening as the commit approaches.
 inline Rgb forgetHold(float progress) {
   return dim(kRed, 20 + scale8(rampLevel(progress), 235));
+}
+
+// Boot-health readout (headless): how many times this board has reset badly.
+//
+// The counter it renders exists because a bridge that resets while the PC
+// sleeps leaves no trace anywhere else (see recordBootHealth in main.cpp), and
+// the serial line that prints it is unreachable on the boards most likely to
+// need it — the SuperMini has a single native-USB port and no UART at all, and
+// on every headless board that port is busy being an Xbox pad. So the LED has
+// to be able to say it.
+//
+// `elapsedMs` is time since the readout was *asked for*, not free-running
+// millis(): a train you join halfway through cannot be counted, so the phase
+// has to be anchored to the button press.
+//
+//   one slow green breath  = nothing has ever gone wrong here
+//   N red flashes          = N brownouts (power delivery)
+//   N blue flashes         = N faults (crash or watchdog)
+//
+// Both trains play in that order when both are non-zero, separated by a gap.
+inline Rgb bootHealth(uint32_t elapsedMs, uint8_t brownouts, uint8_t faults) {
+  const uint8_t nb = brownouts < kHealthFlashCap ? brownouts : kHealthFlashCap;
+  const uint8_t nf = faults < kHealthFlashCap ? faults : kHealthFlashCap;
+  if (nb == 0 && nf == 0) return dim(kGreen, breathe(elapsedMs, 2000));
+
+  const uint32_t redTrain = (uint32_t)nb * kHealthFlashMs * 2;   // each pulse is on+off
+  const uint32_t blueTrain = (uint32_t)nf * kHealthFlashMs * 2;
+  // One trailing gap always; a second one only when both trains are present
+  // and need separating.
+  const uint32_t period =
+      redTrain + blueTrain + kHealthGapMs * ((nb && nf) ? 2 : 1);
+
+  uint32_t p = elapsedMs % period;
+  if (p < redTrain) return ((p / kHealthFlashMs) % 2) == 0 ? kRed : kOff;
+  p -= redTrain;
+  if (nb) {  // the gap that closes the red train
+    if (p < kHealthGapMs) return kOff;
+    p -= kHealthGapMs;
+  }
+  if (p < blueTrain) return ((p / kHealthFlashMs) % 2) == 0 ? kBlue : kOff;
+  return kOff;  // trailing gap, then the whole readout repeats
 }
 
 // LED wiring check (UI_ALIGN_TEST). Cycling all three channels proves both the

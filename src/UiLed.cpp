@@ -68,6 +68,10 @@ void UiLed::forgetConfirm() { show(led::forgetConfirm(millis())); }
 
 void UiLed::forgetHold(float progress) { show(led::forgetHold(progress)); }
 
+void UiLed::bootHealth(uint32_t elapsedMs, uint8_t brownouts, uint8_t faults) {
+  show(led::bootHealth(elapsedMs, brownouts, faults));
+}
+
 void UiLed::live() {
   const uint32_t now = millis();
 

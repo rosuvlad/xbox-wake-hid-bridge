@@ -167,6 +167,74 @@ static void test_progress_is_monotonic_during_a_hold() {
 }
 
 // ---------------------------------------------------------------------------
+// takeClick — the short press, which reveals the boot-health counts
+// ---------------------------------------------------------------------------
+
+static void test_click_on_release_before_the_threshold() {
+  HoldButton b(kHold);
+  b.update(true, 0);
+  b.update(true, 200);
+  b.update(false, 300);
+  TEST_ASSERT_TRUE(b.takeClick());
+}
+
+static void test_click_is_consumed_by_reading_it() {
+  HoldButton b(kHold);
+  b.update(true, 0);
+  b.update(true, 200);
+  b.update(false, 300);
+  TEST_ASSERT_TRUE(b.takeClick());
+  TEST_ASSERT_FALSE(b.takeClick());
+}
+
+static void test_a_hold_never_also_reports_a_click() {
+  // Otherwise forgetting the bond would flash the health readout on the way
+  // out — and worse, the two gestures would stop being distinguishable.
+  HoldButton b(kHold);
+  b.update(true, 0);
+  TEST_ASSERT_TRUE(b.update(true, kHold));
+  b.update(false, kHold + 400);
+  TEST_ASSERT_FALSE(b.takeClick());
+}
+
+static void test_press_edge_bounce_does_not_manufacture_a_click() {
+  // The same bounce that legitimately restarts the hold timer must not look
+  // like a very fast click on its way through.
+  HoldButton b(kHold);
+  b.update(true, 0);
+  b.update(false, 5);   // bounce
+  TEST_ASSERT_FALSE(b.takeClick());
+  b.update(true, 10);
+  b.update(false, 900);  // a real click, this time
+  TEST_ASSERT_TRUE(b.takeClick());
+}
+
+static void test_idle_and_held_buttons_report_no_click() {
+  HoldButton b(kHold);
+  for (uint32_t t = 0; t < 5000; t += 10) {
+    b.update(false, t);
+    TEST_ASSERT_FALSE(b.takeClick());
+  }
+  b.update(true, 5000);
+  for (uint32_t t = 5010; t < 20000; t += 10) {
+    b.update(true, t);
+    TEST_ASSERT_FALSE(b.takeClick());  // still down; nothing has been released
+  }
+}
+
+static void test_repeated_clicks_each_report_once() {
+  HoldButton b(kHold);
+  for (int i = 0; i < 20; i++) {
+    const uint32_t base = i * 1000;
+    b.update(true, base);
+    b.update(true, base + 150);
+    b.update(false, base + 200);
+    TEST_ASSERT_TRUE(b.takeClick());
+    TEST_ASSERT_FALSE(b.takeClick());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 
@@ -229,6 +297,13 @@ int main(int, char**) {
   RUN_TEST(test_progress_spans_zero_to_one);
   RUN_TEST(test_progress_clamps_at_one_past_threshold);
   RUN_TEST(test_progress_is_monotonic_during_a_hold);
+
+  RUN_TEST(test_click_on_release_before_the_threshold);
+  RUN_TEST(test_click_is_consumed_by_reading_it);
+  RUN_TEST(test_a_hold_never_also_reports_a_click);
+  RUN_TEST(test_press_edge_bounce_does_not_manufacture_a_click);
+  RUN_TEST(test_idle_and_held_buttons_report_no_click);
+  RUN_TEST(test_repeated_clicks_each_report_once);
 
   RUN_TEST(test_survives_millis_rollover_mid_hold);
   RUN_TEST(test_zero_threshold_fires_immediately);

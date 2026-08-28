@@ -11,7 +11,8 @@
 //
 // Headless builds (UX_LED, see Ux.h) have one LED and one button instead, so
 // the scheme collapses to:
-//   Hold BOOT 2s -> forget controller and reboot into pairing
+//   Click BOOT    -> blink out the boot-health counts (see recordBootHealth)
+//   Hold BOOT 2s  -> forget controller and reboot into pairing
 // Nothing is lost: pages need a screen, and "pair a new controller" and "forget
 // controller" were already the same operation on both long-press paths below.
 #include <Arduino.h>
@@ -59,6 +60,15 @@ static unsigned long lastNotifSent = 0;  // BLE notif stamp last forwarded
 static uint16_t usbReportCount = 0;      // reports this Hz window
 static uint32_t usbHzWindow = 0;
 static uint32_t wakingUntil = 0;         // show the "Waking PC" flash until
+
+// Boot health, latched at startup so the readout can be asked for at any time
+// (the counts themselves live in NVS). Clamped to uint8_t because the LED
+// caps its flash train well below that anyway.
+static uint8_t bootBrownouts = 0;
+static uint8_t bootFaults = 0;
+#if UX_LED
+static uint32_t bootHealthAt = 0;        // 0 = not showing; else millis() at the click
+#endif
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,6 +202,11 @@ static void onRightLong() {
 // symptom (thin cable, weak port, a board that runs warm), and the honest
 // responses are the recovery above plus a number the user can report — not a
 // blind attempt to trim current draw for a cause nobody has confirmed yet.
+//
+// The Serial line below is the whole story on a board with a UART. Headless
+// boards are the ones that need it most and can least reach it — the native
+// USB port is busy being an Xbox pad, and the SuperMini has no second port at
+// all — so a BOOT click blinks the same counts out on the LED.
 static void recordBootHealth() {
   const esp_reset_reason_t why = esp_reset_reason();
   const bool brownout = (why == ESP_RST_BROWNOUT);
@@ -208,6 +223,9 @@ static void recordBootHealth() {
   if (fault) p.putUInt("faults", ++faults);
   p.putUChar("lastReset", (uint8_t)why);
   p.end();
+
+  bootBrownouts = brownouts > 255 ? 255 : (uint8_t)brownouts;
+  bootFaults = faults > 255 ? 255 : (uint8_t)faults;
 
   // Straight to Serial rather than log_*: CORE_DEBUG_LEVEL is 1 in release
   // builds, which would swallow anything below an error.
@@ -273,6 +291,19 @@ static void frame(uint32_t now) {
   if (btnForget.isDown()) {
     ui.forgetHold(btnForget.progress());
     return;
+  }
+
+  // The boot-health readout, likewise. It sits *below* the hold so reaching for
+  // the forget gesture cancels a running readout rather than fighting it, and
+  // the elapsed time is measured from the click so the flash train can be
+  // counted from its start.
+  if (bootHealthAt) {
+    const uint32_t shown = now - bootHealthAt;
+    if (shown < BOOT_HEALTH_MS) {
+      ui.bootHealth(shown, bootBrownouts, bootFaults);
+      return;
+    }
+    bootHealthAt = 0;
   }
 #endif
 
@@ -450,6 +481,9 @@ void loop() {
 #if UX_LED
   // BOOT is active-low. update() fires once, the moment the hold completes.
   if (btnForget.update(digitalRead(BTN_PIN) == LOW, now)) forgetAndRestart();
+  // A click instead of a hold asks for the boot-health readout. Re-clicking
+  // during one restarts it, which is what a miscount wants.
+  if (btnForget.takeClick()) bootHealthAt = now ? now : 1;
 #else
   btnL.tick();
   btnR.tick();
