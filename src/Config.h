@@ -65,6 +65,11 @@
 // Long enough that it cannot be hit by accident, short enough to not feel stuck.
 static const uint32_t FORGET_HOLD_MS = 2000;
 
+// How long a *click* of BTN_PIN blinks the boot-health counts back. Long enough
+// to see the readout repeat at least once at the worst-case count, so a miscount
+// costs a second look rather than another press.
+static const uint32_t BOOT_HEALTH_MS = 8000;
+
 #else
 // ---------------------------------------------------------------------------
 // Physical controls — LilyGO T-QT Pro

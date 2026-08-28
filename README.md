@@ -136,7 +136,14 @@ boot: reset=9 (BROWNOUT) brownouts=3 faults=0
 ```
 
 Repeated brownouts point at power delivery, not firmware — try a shorter or
-thicker USB cable, or a rear-panel port straight off the motherboard.
+thicker USB cable, or a rear-panel port straight off the motherboard. On a
+headless board that serial line is usually unreachable, so a **click of BOOT**
+blinks the same counts out on the LED: see
+[Reading the boot-health counter](#reading-the-boot-health-counter).
+
+If the bridge *does* flash white on Guide and the PC still sleeps, the firmware
+has done its job and the remaining problem is host-side — see
+[When the port itself has stopped being a wake source](#when-the-port-itself-has-stopped-being-a-wake-source).
 
 ### Windows (if the same box dual-boots)
 
@@ -335,6 +342,8 @@ so states separate by blink rhythm instead of hue.
 | White strobe | remote-wake sent |
 | Blue or green triple-flash, then reboot | USB identity switched (blue = Xbox 360/XInput, green = Series) |
 | Red ramp (deepening) | BOOT held — releases the bond at full red (2 s) |
+| Green breathe (one slow 2 s pulse, on request) | boot health: this board has never brownout-reset or crashed |
+| Red flashes ×N, then blue flashes ×N (on request) | boot health: N brownouts, then N crashes/watchdogs — see [Reading the boot-health counter](#reading-the-boot-health-counter) |
 
 ### Controls
 
@@ -345,8 +354,79 @@ into pairing):
 | Action | Result |
 | --- | --- |
 | **Xbox/Guide button** | wakes the PC when it is suspended (powers the pad on first — it reconnects, then the PC wakes) |
+| **Click BOOT** | blink out the boot-health counter for 8 s — see [below](#reading-the-boot-health-counter) |
 | **Hold BOOT ~2 s** | forget the controller and reboot into pairing (red ramp confirms) |
 | **Hold View + Menu + D-pad Down 3 s** (on the pad) | switch USB identity — Series HID ↔ Xbox 360 XInput (blue/green flash, then reboot) |
+
+### Reading the boot-health counter
+
+A bridge that resets while the PC sleeps leaves no trace anywhere else: the host
+is not awake to log the USB drop, the board is back up long before anyone looks
+at it, and the pad reconnects over BLE as if nothing happened. The firmware
+recovers on its own — after ten seconds with no USB life it arms the wake
+regardless — but *whether it happened* is the difference between a power-delivery
+problem and a firmware one, so every boot is counted in NVS.
+
+The count is printed over serial at 115200 baud on each boot:
+
+```
+boot: reset=1 brownouts=0 faults=0     # 1 = normal power-on
+boot: reset=9 (BROWNOUT) brownouts=3 faults=0
+```
+
+On a headless board that line is usually unreachable — the native USB port is
+busy being an Xbox pad, and the SuperMini has no UART port at all — so
+**clicking BOOT** (a short press; holding it for 2 s still forgets the pad)
+blinks the same numbers out on the LED for 8 seconds:
+
+| Readout | Meaning |
+| --- | --- |
+| One slow green breath | nothing has ever gone wrong on this board |
+| **N red flashes** | **N brownouts** — the board lost power momentarily |
+| N blue flashes | N crashes or watchdog resets (firmware faults — please report) |
+
+Both trains play in that order when both are non-zero, separated by a long gap,
+and the whole readout repeats so a miscount only costs a second look. Counts
+above nine render as nine.
+
+Repeated **brownouts** point at power delivery, not firmware: try a shorter or
+thicker USB cable, a rear-panel port straight off the motherboard, or a
+self-powered hub. The counters survive reflashing and reset only when NVS is
+erased (`pio run -t erase`).
+
+### When the port itself has stopped being a wake source
+
+If the bridge flashes **white** when you press Guide but the PC does not wake,
+the firmware has done its whole job — white *is* the wake signal going out — and
+what is left is on the host side. That is a much narrower problem, and these
+separate its causes:
+
+1. **Pull the cable.** With the PC asleep, physically unplug and replug the
+   bridge. A replug is the strongest wake signal a USB port can receive, and
+   stronger than anything firmware can send. If **that** does not wake the PC
+   either, no firmware change ever will — the port has stopped being a wake
+   source, and everything below applies. If it *does* wake the PC, that is worth
+   reporting as a bug.
+2. **Move it to a port that is known to work.** Swap the bridge into the port
+   your keyboard uses (and the keyboard into the bridge's). Motherboards
+   routinely arm only some ports for wake in S3, and front-panel headers and
+   external hubs are the usual losers. If the bridge then wakes the PC, you have
+   both the diagnosis and the fix.
+3. **Check whether the signal is even reaching the kernel** (Linux). Read the
+   bridge's wakeup counter before and after a failed Guide press:
+
+   ```bash
+   cat /sys/bus/usb/devices/*/power/wakeup_count      # all devices
+   ```
+
+   If the bridge's count **goes up**, the host received the wake and declined to
+   act on it — a BIOS/platform policy question. If it **stays flat**, the port
+   never saw us, and step 2 is your fix.
+4. **Re-check the BIOS items** in [Host PC setup](#1-bios--uefi), *ErP / EuP
+   Ready = Disabled* above all. On ASUS boards it lives under Advanced → APM
+   Configuration.
+5. **Check the board is not browning out** — click BOOT and count the red
+   flashes, as above.
 
 ### Building & flashing a devkit
 

@@ -51,6 +51,11 @@ class UiLed {
   // main.cpp the same way waking() overrides the current screen.
   void forgetHold(float progress);
 
+  // Headless-only, and an override in the same way: how many bad resets this
+  // board has had, blinked out on request. The TFT build has a serial console
+  // and a diagnostics screen; a headless one has neither.
+  void bootHealth(uint32_t elapsedMs, uint8_t brownouts, uint8_t faults);
+
  private:
   void show(Rgb c);
   void live();
